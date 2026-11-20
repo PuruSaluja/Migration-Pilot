@@ -301,8 +301,8 @@ any → END:BUDGET_EXCEEDED | END:ERROR | END:CANCELLED ;  ESCALATED → END:ESC
   - all baseline-passing, non-flaky tests pass
   - build and typecheck pass
   - the target version is resolved
-  - the integrity gate passes
-  - the Critic approves
+  - the integrity gate passes for that mirror commit
+  - the Critic approves that mirror commit (a report or verdict about an earlier commit never counts, §12)
 - **No progress:** if the failure-signature set is unchanged for 3 attempts, escalate.
 - **Oscillation:** if a diff hash repeats, escalate.
 - **Attempt scoring:** each attempt scores as (furthest verify stage reached: install < build < typecheck < tests, failing-test count). `improved` = a later stage, or fewer failures at the same stage; `same` = an equal score; `regressed` = a worse score; `green` = all stages pass.
@@ -339,7 +339,7 @@ any → END:BUDGET_EXCEEDED | END:ERROR | END:CANCELLED ;  ESCALATED → END:ESC
 6. Record token usage from SDK result messages into `LLMCall`.
 7. Load no settings sources: no user or project settings, CLAUDE.md files, plugins, hooks, skills, SDK-native agents or external MCP servers. Use a temp `HOME` and config dir, pass an explicit `disallowed_tools` list covering every built-in, never use a bypass-permissions mode, and add a deny-by-default permission callback alongside the hook.
 8. Give the SDK subprocess a minimal environment from an explicit allowlist: the OAuth token, `PATH`, the temp paths and the model-pin variables of item 9. The GitHub token is never in it.
-9. Pin every model setting the SDK exposes, including the background or "haiku" model, to Sonnet 5.5. After each call, check the per-model usage the SDK reports; any model other than the routed one fails the call (`ForbiddenModelError`, NFR-12).
+9. Pin every model setting the SDK exposes: each model alias to the exact configured ID of its tier, and the background or "haiku" model to Sonnet 5.5. These pins are fixed in code; no configuration can override them or pass any other `ANTHROPIC_*` variable to the SDK. After each call, check the per-model usage the SDK reports; any model other than the routed one fails the call (`ForbiddenModelError`, NFR-12).
 10. Run every role call with extended thinking on (§8.3), and assert it.
 
 Every runtime start validates items 1–10 statically. `mpilot selftest` (Phase 4) adds a live check proving that a built-in tool call is refused.
@@ -596,7 +596,7 @@ The sandbox controls everything inside `/workspace`, including `.git` (config, h
 - **Commits:** at INTEGRITY_CHECK the mirror commits are built as the diffs between consecutive snapshots (base → bump → codemods → manual fixes), one commit per phase. The mirror tree must equal the walked workspace tree, or the gate fails.
 - **Final verification:** the whole pipeline (install → build → typecheck → full suite) runs in a fresh sandbox built from the exact mirror commit that will be pushed, with a fresh or hash-verified package cache. Success, levels L0–L2 and every gate check judge only that run and that commit: (a) and (b) use its test results, (g) reads the resolved version from it or from the commit's lockfile, and (h) searches the commit's tree. Coverage (f) comes from one extra instrumented run of the same commit, so (a) judges an uninstrumented run, as at baseline.
 - **Push:** from the mirror, only if the commit equals the one final verification ran on, with an explicit `refs/heads/mpilot/<x>` refspec; the token is supplied through `GIT_ASKPASS` and never written to `.git/config` or a URL.
-- **Attempts:** at the end of each attempt the host records the walked tree as a mirror ref, `refs/mpilot/attempt/<n>` (§10.1). Revert-to-best and crash recovery restore the workspace from these host-owned refs through `Workspace`, never from sandbox git.
+- **Attempts:** at the end of each attempt the host records the walked tree as a mirror ref, `refs/mpilot/attempt/<n>` (§10.1), where `n` is the run-wide `Attempt.n` (§12). Revert-to-best and crash recovery restore the workspace from these host-owned refs through `Workspace`, never from sandbox git.
 
 ---
 
@@ -604,7 +604,7 @@ The sandbox controls everything inside `/workspace`, including `.git` (config, h
 
 ### 10.1 Stores
 - **Run state (DB):** authoritative, checkpointed after every tool call. Enables crash and usage-limit resume.
-- **Attempt snapshots:** each attempt's end state is recorded on the host as a mirror ref, `refs/mpilot/attempt/<n>` (§9.5), so reverting to the best attempt is trivial and doesn't trust sandbox git. The workspace is exported on pause.
+- **Attempt snapshots:** each attempt's end state is recorded on the host as a mirror ref, `refs/mpilot/attempt/<n>` (§9.5; run-wide `n`, §12), so reverting to the best attempt is trivial and doesn't trust sandbox git. The workspace is exported on pause.
 - **Crash recovery:** after a crash (as opposed to a usage-limit pause), the side effects of an in-flight tool call are unknown, so the workspace is restored to the latest host snapshot (attempt, else phase, else `base_sha`) and the interrupted step restarts. An install is forced after any restore, because dependency directories aren't in snapshots.
 - **Migration notes:** `write_note` stores confirmed facts, rejected hypotheses and repo conventions. They are injected into every role prompt (≤ 2k tokens).
 - **Failure history:** `{signature, attempts, hypotheses_tried, outcome}`. Used for no-progress detection and to tell the Diagnoser what not to retry.
@@ -721,7 +721,8 @@ class Baseline:       runs; passing_ids; flaky_ids; test_file_hashes; test_count
 class Plan:           id; run_id; steps: list[Step]; risks; changelog_refs; approved?
 class Step:           id; order; type: bump|codemod|edit_cluster|config|test_touch|verify; description
                       target_files; rationale; status: pending|running|done|failed|skipped; attempts
-class Attempt:        id; step_id; n; diagnosis?: Diagnosis; diff_sha; verify: VerifyResult
+class Attempt:        id; step_id; n  # run-wide, unique per run, = refs/mpilot/attempt/<n>
+                      n_in_step; diagnosis?: Diagnosis; diff_sha; verify: VerifyResult
                       outcome: improved|same|regressed|green
 class Diagnosis:      signature; category: FailureCategory; evidence; hypotheses; files; changelog_refs
 class ToolCall:       id; attempt_id?; role; tool; input; output_summary; duration_ms
@@ -735,9 +736,12 @@ class RoutingDecision: id; run_id; step_id?; role; policy: routed|all_opus|all_s
                       sticky: bool; inputs_hash
 class TestResult:     run_id; attempt_id?; stage: baseline|targeted|full|final; passed; failed; skipped; errors
                       passed_ids; failed_ids; duration_s; failures; junit_path?
-class IntegrityReport: passed; violations; coverage_delta_pp?; test_count_before; test_count_after
+class IntegrityReport: mirror_commit  # the commit it judged (§9.5)
+                      checks  # ids of the checks that ran
+                      passed; violations; coverage_delta_pp?; test_count_before; test_count_after
                       resolved_versions; removed_api_usages_remaining
-class CriticVerdict:  decision: approve|revise|escalate; findings; hunk_mapping
+class CriticVerdict:  mirror_commit  # the diff target it reviewed
+                      decision: approve|revise|escalate; findings; hunk_mapping
 class PullRequest:    run_id; number; url; branch; draft; commits; created_at
 class EvalResult:     suite; task_id; system; seed; status; success_level: L0..L4|none
                       turns; tokens; api_equiv_usd; wall_s; attempts; llm_calls; routing_policy; effort_policy; opus_token_share
@@ -1245,6 +1249,9 @@ Quality is the metric, not speed. With roughly two-thirds of tasks on Sonnet, ex
 | 2026-11-19 | v1.4 (third review): phase snapshot refs and phase commits from consecutive snapshots; tracked files never excluded; every workspace-mounting container frozen; metadata-only disk polling; redaction covers model inputs (§9.3); (a) counts missing tests as failing and cross-checks JUnit; push only the verified commit; baselines judged the same way | Consistency fixes from the third review |
 | 2026-11-19 | v1.4: detail rules: Administration never requested (§11.6); seeds are repeat indices (NFR-5); cassettes at the runtime boundary; Typer, githubkit, hypothesis, respx, SQLite FTS5 (§15); Docker tests fail rather than skip (§18 rule 8); API binds to 127.0.0.1; escalate-immediately detection (§7.4); repo size check (FR-2); Explorer 20-call cutoff (FR-23); B2 inputs and B3 turn cap (§14.6) | Approved P0 proposals, logged for completeness |
 | 2026-11-20 | v1.4 (P1-07): routing pins defined (§8.4 "Pins"): a pin sets a role's default tier/effort only (a Sonnet pin waives the default Sonnet conditions; an Opus pin may lift the Explorer or PR Writer off Sonnet); **medium effort can never be pinned (owner decision: a medium pin could never change a result)**; triggers, effort escalation and stickiness always apply on top; "a trigger fired in this scope" is part of the sticky state, and every escalation is recorded in it | Pins existed in config since P1-06 without spec semantics; a pin must never weaken trigger 7 (`test_touch`) or any other quality rule (P1-07 review) |
+| 2026-11-20 | v1.4 (P1-12 gate): `IntegrityReport` and `CriticVerdict` record the `mirror_commit` they judged, and the report the `checks` that ran (§12); the success push requires `commit == final verification == report == verdict` commit | Run-id binding let a passing report or approving verdict from an earlier INTEGRITY_CHECK pass vouch for a newer commit (§9.5, §7.4) |
+| 2026-11-20 | v1.4 (P1-12 gate): `Attempt.n` is the run-wide attempt number, unique per run and equal to the `n` of `refs/mpilot/attempt/<n>`; `Attempt.n_in_step` is the per-step ordinal (§12) | A per-step `n` made attempt refs collide across steps, so revert-to-best could restore the wrong tree |
+| 2026-11-20 | v1.4 (P1-12 gate): §8.1 item 9: no configurable `ANTHROPIC_*` passthrough (the `runtime.anthropic_env` setting is removed); the SDK gets only the fixed model pins, every alias pinned to the configured ID, the background model to Sonnet | The setting could re-point the background model and set `ANTHROPIC_BASE_URL`, sending the OAuth token elsewhere (§8.1 items 8-9) |
 
 ---
 

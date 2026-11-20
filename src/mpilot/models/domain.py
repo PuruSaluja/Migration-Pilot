@@ -49,6 +49,8 @@ Confidence = Annotated[float, Field(ge=0, le=1)]
 IdSet = Annotated[frozenset[str], PlainSerializer(sorted, return_type=list[str])]
 
 _GIT_SHA = re.compile(r"^[0-9a-f]{40}([0-9a-f]{24})?$")
+#: A full lowercase hex git object id (SHA-1 or SHA-256).
+GitSha = Annotated[str, Field(pattern=_GIT_SHA.pattern)]
 
 
 class DomainModel(BaseModel):
@@ -189,7 +191,7 @@ class Run(DomainModel):
 
     @model_validator(mode="after")
     def _check(self) -> Self:
-        if self.base_sha is not None and not _GIT_SHA.match(self.base_sha):
+        if self.base_sha is not None and not _GIT_SHA.fullmatch(self.base_sha):
             raise ValueError("base_sha must be a full lowercase hex git object id")
         if self.status is RunStatus.PAUSED_LIMIT and self.paused_at_state is None:
             raise ValueError("a run in PAUSED_LIMIT must record paused_at_state")
@@ -307,11 +309,21 @@ class Attempt(DomainModel):
     id: AttemptId
     run_id: RunId
     step_id: StepId
-    n: PositiveInt  # 1-based attempt number within the step
+    #: Run-wide 1-based attempt number (1..max_attempts_run, NFR-3), unique per run. It is the
+    #: `n` of the host snapshot ref `refs/mpilot/attempt/<n>` (§9.5, §10.1), so refs never
+    #: collide across steps and revert-to-best restores the right tree.
+    n: PositiveInt
+    n_in_step: PositiveInt  # 1-based attempt number within the step (1..max_attempts_step)
     diagnosis: Diagnosis | None = None
     diff_sha: str  # hash of the host-computed diff (oscillation detection, §7.4)
     verify: VerifyResult
     outcome: Outcome
+
+    @model_validator(mode="after")
+    def _check(self) -> Self:
+        if self.n_in_step > self.n:
+            raise ValueError("an attempt's number in its step cannot exceed its run-wide number")
+        return self
 
 
 # ---------------------------------------------------------------- tool and model calls
@@ -407,7 +419,12 @@ class Violation(DomainModel):
 
 
 class IntegrityReport(DomainModel):
+    """One evaluation of the §11.2 gate. Bound to the exact mirror commit it judged (§9.5), so
+    a report from an earlier INTEGRITY_CHECK pass can never vouch for a newer commit."""
+
     run_id: RunId
+    mirror_commit: GitSha  # the commit final verification ran on and the gate judged
+    checks: list[str] = Field(min_length=1)  # ids of the checks that ran, sorted (PR attestation)
     passed: bool
     violations: list[Violation] = Field(default_factory=list)
     coverage_delta_pp: float | None = None
@@ -420,11 +437,18 @@ class IntegrityReport(DomainModel):
     def _check(self) -> Self:
         if self.passed == bool(self.violations):
             raise ValueError("passed must be true exactly when there are no violations")
+        if self.checks != sorted(set(self.checks)):
+            raise ValueError("checks must be sorted and unique")
         return self
 
 
 class CriticVerdict(DomainModel):
+    """The Critic's review of one host-computed diff (§8.2). Bound to the mirror commit that
+    diff targets, like the integrity report: a verdict on an earlier commit approves nothing
+    newer (§7.4: any edit after INTEGRITY_CHECK re-runs the whole sequence)."""
+
     run_id: RunId
+    mirror_commit: GitSha  # `WorkspaceDiff.target` of the diff it reviewed
     decision: CriticDecision
     findings: list[str] = Field(default_factory=list)
     hunk_mapping: dict[str, str] = Field(default_factory=dict)  # hunk -> plan step or diagnosis

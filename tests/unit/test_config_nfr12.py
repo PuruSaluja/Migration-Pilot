@@ -56,72 +56,92 @@ def test_the_default_config_mentions_haiku_nowhere() -> None:
     assert not [v for v in config.sdk_model_env().values() if "haiku" in v.lower()]
 
 
-# ---------------------------------------------------------------- ANTHROPIC_* overrides
+# ---------------------------------------------------------------- SDK model pins (§8.1 items 8-9)
 
 
-@pytest.mark.parametrize("bad", ["claude-haiku-4-5", "HAIKU", "x-Haiku"])
-@pytest.mark.parametrize(
-    "name", ["ANTHROPIC_DEFAULT_HAIKU_MODEL", "ANTHROPIC_MODEL", "ANTHROPIC_X"]
-)
-def test_haiku_in_the_value_of_an_anthropic_override_is_rejected(
-    tmp_path: Path, name: str, bad: str
-) -> None:
-    with pytest.raises(ConfigError, match="Haiku"):
-        _load_toml(tmp_path, f'[runtime.anthropic_env]\n{name} = "{bad}"\n')
-    with pytest.raises(ConfigError, match="Haiku"):
-        load_config(environ={"MPILOT_RUNTIME__ANTHROPIC_ENV": f'{{"{name}": "{bad}"}}'})
-
-
-def test_the_sonnet_pin_on_the_haiku_variable_is_accepted(tmp_path: Path) -> None:
-    config = _load_toml(
-        tmp_path, f'[runtime.anthropic_env]\nANTHROPIC_DEFAULT_HAIKU_MODEL = "{SONNET}"\n'
-    )
-    assert config.sdk_model_env()["ANTHROPIC_DEFAULT_HAIKU_MODEL"] == SONNET
-    # and that is also what the built-in pin does, for both background-model variables
-    env = load_config(environ={}).sdk_model_env()
-    assert env == {
+def test_every_sdk_model_alias_is_pinned_and_the_background_model_is_sonnet() -> None:
+    assert load_config(environ={}).sdk_model_env() == {
+        "ANTHROPIC_DEFAULT_OPUS_MODEL": OPUS,
+        "ANTHROPIC_DEFAULT_SONNET_MODEL": SONNET,
         "ANTHROPIC_DEFAULT_HAIKU_MODEL": SONNET,
         "ANTHROPIC_SMALL_FAST_MODEL": SONNET,
     }
 
 
-def test_the_default_pins_follow_the_configured_sonnet() -> None:
+def test_the_pins_follow_the_configured_models() -> None:
     other = "claude-sonnet-5-6"
     env = load_config(environ={"MPILOT_MODELS__SONNET": other}).sdk_model_env()
-    assert set(env.values()) == {other}
-
-
-def test_model_variables_must_name_a_configured_model(tmp_path: Path) -> None:
-    with pytest.raises(ConfigError, match="not one of the configured models"):
-        _load_toml(tmp_path, '[runtime.anthropic_env]\nANTHROPIC_MODEL = "some-other-model"\n')
-    _load_toml(tmp_path, f'[runtime.anthropic_env]\nANTHROPIC_MODEL = "{OPUS}"\n')
+    assert env["ANTHROPIC_DEFAULT_HAIKU_MODEL"] == env["ANTHROPIC_SMALL_FAST_MODEL"] == other
+    assert env["ANTHROPIC_DEFAULT_OPUS_MODEL"] == OPUS
 
 
 @pytest.mark.parametrize(
-    "name", ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_FOO_API_KEY"]
+    "toml",
+    [
+        # the P1-12 review's case: re-pointing the background model, and a base URL that
+        # would send the OAuth token to another host
+        f'ANTHROPIC_DEFAULT_HAIKU_MODEL = "{OPUS}"',
+        f'ANTHROPIC_SMALL_FAST_MODEL = "{OPUS}"',
+        'ANTHROPIC_BASE_URL = "https://attacker.example"',
+        'ANTHROPIC_LOG = "debug"',
+        f'ANTHROPIC_DEFAULT_HAIKU_MODEL = "{SONNET}"',  # even a harmless restatement
+    ],
 )
-def test_api_keys_cannot_be_configured(tmp_path: Path, name: str) -> None:
-    with pytest.raises(ConfigError, match="no API key"):
-        _load_toml(tmp_path, f'[runtime.anthropic_env]\n{name} = "sk-ant-x"\n')
+def test_there_is_no_anthropic_setting_to_override_anything(tmp_path: Path, toml: str) -> None:
+    with pytest.raises(ConfigError, match="anthropic_env"):
+        _load_toml(tmp_path, f"[runtime.anthropic_env]\n{toml}\n")
 
 
-def test_only_anthropic_variables_are_accepted(tmp_path: Path) -> None:
-    with pytest.raises(ConfigError, match="only ANTHROPIC_"):
-        _load_toml(tmp_path, '[runtime.anthropic_env]\nPATH = "/x"\n')
-    with pytest.raises(ConfigError, match="only ANTHROPIC_"):
-        _load_toml(tmp_path, '[runtime.anthropic_env]\nanthropic_model = "x"\n')
+def test_the_env_route_is_closed_too() -> None:
+    with pytest.raises(ConfigError, match=r"(?i)anthropic_env"):
+        load_config(environ={"MPILOT_RUNTIME__ANTHROPIC_ENV": '{"ANTHROPIC_BASE_URL": "x"}'})
 
 
-def test_unrelated_anthropic_variables_are_fine(tmp_path: Path) -> None:
-    config = _load_toml(tmp_path, '[runtime.anthropic_env]\nANTHROPIC_LOG = "debug"\n')
-    assert config.sdk_model_env()["ANTHROPIC_LOG"] == "debug"
+PINS = {
+    "ANTHROPIC_DEFAULT_OPUS_MODEL": OPUS,
+    "ANTHROPIC_DEFAULT_SONNET_MODEL": SONNET,
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL": SONNET,
+    "ANTHROPIC_SMALL_FAST_MODEL": SONNET,
+}
 
 
-def test_the_runtime_lockdown_can_reuse_the_rule_on_a_real_env() -> None:
-    models = {OPUS, SONNET}
-    assert anthropic_env_problems({"ANTHROPIC_SMALL_FAST_MODEL": SONNET}, models) == []
-    assert anthropic_env_problems({"ANTHROPIC_SMALL_FAST_MODEL": "claude-haiku-4-5"}, models)
-    assert anthropic_env_problems({"HOME": "/x"}, models)
+def _problems(env: dict[str, str]) -> list[str]:
+    return anthropic_env_problems(env, opus=OPUS, sonnet=SONNET)
+
+
+def test_the_lockdown_rule_accepts_exactly_the_pins_and_ignores_other_names() -> None:
+    assert _problems(PINS) == []
+    assert _problems(PINS | {"PATH": "/usr/bin", "HOME": "/home/mpilot-sdk"}) == []  # item 8's job
+
+
+@pytest.mark.parametrize(
+    ("extra", "match"),
+    [
+        ({"ANTHROPIC_BASE_URL": "https://attacker.example"}, "not allowed"),
+        ({"ANTHROPIC_MODEL": OPUS}, "not allowed"),
+        ({"ANTHROPIC_LOG": "debug"}, "not allowed"),
+        ({"anthropic_base_url": "x"}, "not allowed"),  # any case
+        ({"ANTHROPIC_API_KEY": "sk-ant-x"}, "no API key"),
+        ({"ANTHROPIC_AUTH_TOKEN": "x"}, "no API key"),
+        ({"ANTHROPIC_FOO_API_KEY": "x"}, "no API key"),
+        ({"ANTHROPIC_DEFAULT_HAIKU_MODEL": "claude-haiku-4-5"}, "Haiku"),
+        ({"ANTHROPIC_SMALL_FAST_MODEL": "x-HAIKU"}, "Haiku"),
+        ({"ANTHROPIC_DEFAULT_HAIKU_MODEL": OPUS}, "must be"),
+        ({"ANTHROPIC_SMALL_FAST_MODEL": OPUS}, "must be"),
+        ({"ANTHROPIC_DEFAULT_SONNET_MODEL": OPUS}, "must be"),
+        ({"ANTHROPIC_DEFAULT_OPUS_MODEL": SONNET}, "must be"),
+    ],
+)
+def test_the_lockdown_rule_refuses_anything_else(extra: dict[str, str], match: str) -> None:
+    problems = _problems(PINS | extra)
+    assert problems
+    assert any(match in p for p in problems), problems
+
+
+@pytest.mark.parametrize("missing", sorted(PINS))
+def test_the_lockdown_rule_requires_every_pin(missing: str) -> None:
+    env = {k: v for k, v in PINS.items() if k != missing}
+    assert _problems(env) == [f"{missing}: missing model pin"]
 
 
 # ---------------------------------------------------------------- effort values
@@ -344,4 +364,4 @@ def test_normalization_does_not_change_the_hash_between_spellings(tmp_path: Path
 def test_the_example_file_documents_the_new_settings() -> None:
     text = (Path(__file__).resolve().parents[2] / "mpilot.toml.example").read_text()
     assert "routing.pins.editor" in text
-    assert "anthropic_env" in text
+    assert "no ANTHROPIC_* setting" in text

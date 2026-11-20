@@ -204,6 +204,8 @@ def evaluate_gate(
     base_cov, final_cov = inp.baseline.coverage_pct, inp.final.coverage_pct
     return IntegrityReport(
         run_id=inp.baseline.run_id,
+        mirror_commit=inp.mirror_commit,
+        checks=sorted(ids),
         passed=not violations,
         violations=violations,
         coverage_delta_pp=None if base_cov is None or final_cov is None else final_cov - base_cov,

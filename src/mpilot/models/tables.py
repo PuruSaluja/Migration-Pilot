@@ -36,6 +36,7 @@ from sqlalchemy import (
     MetaData,
     String,
     Text,
+    UniqueConstraint,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.engine import Dialect
@@ -221,7 +222,8 @@ class DbAttempt(_Append, Base):
     run_id: Mapped[str] = mapped_column(ForeignKey("runs.id", ondelete="CASCADE"))
     id: Mapped[str] = mapped_column(String, unique=True)
     step_id: Mapped[str] = mapped_column(String)
-    n: Mapped[int] = mapped_column(Integer)
+    n: Mapped[int] = mapped_column(Integer)  # run-wide, = refs/mpilot/attempt/<n>
+    n_in_step: Mapped[int] = mapped_column(Integer)
     outcome: Mapped[str] = mapped_column(String)
     diff_sha: Mapped[str] = mapped_column(String)
     signature: Mapped[str | None] = mapped_column(String)
@@ -231,7 +233,9 @@ class DbAttempt(_Append, Base):
     __table_args__ = (
         Index("ix_attempts_run_id_seq", "run_id", "seq"),
         Index("ix_attempts_step_id", "step_id"),
-        CheckConstraint("n > 0", name="n_positive"),
+        UniqueConstraint("run_id", "n"),  # one attempt ref per number (§9.5)
+        UniqueConstraint("run_id", "step_id", "n_in_step"),
+        CheckConstraint("n > 0 AND n_in_step > 0 AND n_in_step <= n", name="numbers_valid"),
         CheckConstraint(
             _in("outcome", ("improved", "same", "regressed", "green")), name="outcome_known"
         ),
@@ -389,6 +393,7 @@ class DbIntegrityReport(_Append, Base):
     __tablename__ = "integrity_reports"
 
     run_id: Mapped[str] = mapped_column(ForeignKey("runs.id", ondelete="CASCADE"))
+    mirror_commit: Mapped[str] = mapped_column(String)  # the commit it judged (§9.5)
     passed: Mapped[bool] = mapped_column(Boolean)
     test_count_before: Mapped[int] = mapped_column(Integer)
     test_count_after: Mapped[int] = mapped_column(Integer)
@@ -407,6 +412,7 @@ class DbCriticVerdict(_Append, Base):
     __tablename__ = "critic_verdicts"
 
     run_id: Mapped[str] = mapped_column(ForeignKey("runs.id", ondelete="CASCADE"))
+    mirror_commit: Mapped[str] = mapped_column(String)  # the diff target it reviewed
     decision: Mapped[str] = mapped_column(String)
     doc: Mapped[dict[str, Any]]
 

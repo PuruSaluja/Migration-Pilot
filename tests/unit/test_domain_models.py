@@ -154,6 +154,8 @@ def _routing(**over: Any) -> d.RoutingDecision:
 def _integrity(**over: Any) -> d.IntegrityReport:
     fields: dict[str, Any] = {
         "run_id": RUN,
+        "mirror_commit": SHA,
+        "checks": ["integrity.a", "integrity.c"],
         "passed": False,
         "violations": [
             d.Violation(check_id="integrity.c", code="test_deleted", message="x", path="t.py")
@@ -240,7 +242,8 @@ SAMPLES: dict[type[d.DomainModel], Callable[[], d.DomainModel]] = {
         id=AttemptId("att-1"),
         run_id=RUN,
         step_id=StepId("step-1"),
-        n=1,
+        n=3,
+        n_in_step=1,
         diagnosis=_diagnosis(),
         diff_sha="e" * 16,
         verify=_verify(),
@@ -264,6 +267,7 @@ SAMPLES: dict[type[d.DomainModel], Callable[[], d.DomainModel]] = {
     d.IntegrityReport: _integrity,
     d.CriticVerdict: lambda: d.CriticVerdict(
         run_id=RUN,
+        mirror_commit=SHA,
         decision=d.CriticDecision.REVISE,
         findings=["swallowed exception"],
         hunk_mapping={"src/a.ts@10": "step-1"},
@@ -392,7 +396,7 @@ SECTION_12_FIELDS: dict[str, set[str]] = {
         "status",
         "attempts",
     },
-    "Attempt": {"id", "step_id", "n", "diagnosis", "diff_sha", "verify", "outcome"},
+    "Attempt": {"id", "step_id", "n", "n_in_step", "diagnosis", "diff_sha", "verify", "outcome"},
     "Diagnosis": {"signature", "category", "evidence", "hypotheses", "files", "changelog_refs"},
     "ToolCall": {
         "id",
@@ -452,6 +456,8 @@ SECTION_12_FIELDS: dict[str, set[str]] = {
         "junit_path",
     },
     "IntegrityReport": {
+        "mirror_commit",
+        "checks",
         "passed",
         "violations",
         "coverage_delta_pp",
@@ -460,7 +466,7 @@ SECTION_12_FIELDS: dict[str, set[str]] = {
         "resolved_versions",
         "removed_api_usages_remaining",
     },
-    "CriticVerdict": {"decision", "findings", "hunk_mapping"},
+    "CriticVerdict": {"mirror_commit", "decision", "findings", "hunk_mapping"},
     "PullRequest": {"run_id", "number", "url", "branch", "draft", "commits", "created_at"},
     "EvalResult": {
         "suite",
@@ -702,3 +708,46 @@ def test_migration_spec_needs_a_package() -> None:
 def test_json_schemas_snapshot(snapshot: SnapshotAssertion) -> None:
     schemas = {m.__name__: m.model_json_schema() for m in sorted(SAMPLES, key=lambda m: m.__name__)}
     assert schemas == snapshot
+
+
+# ---------------------------------------------------------------- P1-12 gate: numbering, binding
+
+
+def test_an_attempt_is_numbered_run_wide_and_within_its_step() -> None:
+    base = SAMPLES[d.Attempt]()
+    assert isinstance(base, d.Attempt)
+    d.Attempt.model_validate(base.model_dump() | {"n": 7, "n_in_step": 7})
+    with pytest.raises(ValidationError, match="cannot exceed"):
+        d.Attempt.model_validate(base.model_dump() | {"n": 2, "n_in_step": 3})
+    with pytest.raises(ValidationError):
+        d.Attempt.model_validate(base.model_dump() | {"n_in_step": 0})
+
+
+@pytest.mark.parametrize("bad", ["", "abc", "A" * 40, "a" * 39, "a" * 41])
+def test_reports_and_verdicts_name_a_full_commit(bad: str) -> None:
+    with pytest.raises(ValidationError):
+        _integrity(mirror_commit=bad)
+    verdict = SAMPLES[d.CriticVerdict]()
+    with pytest.raises(ValidationError):
+        d.CriticVerdict.model_validate(verdict.model_dump() | {"mirror_commit": bad})
+
+
+def test_an_integrity_report_lists_the_checks_that_ran() -> None:
+    with pytest.raises(ValidationError):
+        _integrity(checks=[])
+    with pytest.raises(ValidationError, match="sorted and unique"):
+        _integrity(checks=["integrity.c", "integrity.a"])
+    with pytest.raises(ValidationError, match="sorted and unique"):
+        _integrity(checks=["integrity.a", "integrity.a"])
+
+
+def test_a_sha_with_a_trailing_newline_is_not_a_sha() -> None:
+    """`re.match` with `$` accepts "...\\n"; every SHA check uses fullmatch (P1-12 review)."""
+    from mpilot.models import artifacts as art
+
+    with pytest.raises(ValidationError, match="full lowercase hex"):
+        _run(base_sha=SHA + "\n")
+    with pytest.raises(ValueError, match="full lowercase hex"):
+        art._check_git_sha(SHA + "\n")
+    with pytest.raises(ValidationError):
+        _integrity(mirror_commit=SHA + "\n")

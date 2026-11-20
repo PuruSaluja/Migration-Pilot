@@ -75,9 +75,9 @@ class RunRequest(_Frozen):
     def _ref(cls, v: str | None) -> str | None:
         """It reaches host git at intake, so it must never read as an option: a full hex SHA,
         or a name `git check-ref-format` accepts. P3-03 still passes it after `--`."""
-        if v is None or _FULL_SHA.match(v):
+        if v is None or _FULL_SHA.fullmatch(v):
             return v
-        if not _SAFE_REF.match(v) or ".." in v or "//" in v or "@{" in v or v.endswith(".lock"):
+        if not _SAFE_REF.fullmatch(v) or ".." in v or "//" in v or "@{" in v or v.endswith(".lock"):
             raise ValueError(f"not a safe git ref: {v!r}")
         return v
 

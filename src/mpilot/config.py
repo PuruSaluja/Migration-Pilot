@@ -42,6 +42,7 @@ from mpilot.model_policy import (
     anthropic_env_problems,
     model_id_problems,
     pin_problems,
+    sdk_model_pins,
 )
 from mpilot.models.domain import Budgets
 
@@ -211,9 +212,9 @@ class RuntimeSettings(_Section):
     """
 
     kind: Literal["agent_sdk"] = "agent_sdk"
-    #: Extra `ANTHROPIC_*` settings for the SDK subprocess, on top of the model pins that
-    #: `Config.sdk_model_env()` always applies. Validated by `anthropic_env_problems`.
-    anthropic_env: dict[str, str] = Field(default_factory=dict)
+    # No `ANTHROPIC_*` passthrough: the SDK subprocess gets only the model pins fixed in
+    # `model_policy.SDK_MODEL_PIN_TIERS` (§8.1 items 8-9). A configurable one could re-point
+    # the background model or `ANTHROPIC_BASE_URL` (P1-12 review, B4).
 
 
 class ModelPrice(_Section):
@@ -266,7 +267,7 @@ class Config(_Section):
     @model_validator(mode="after")
     def _nfr_12_and_prices(self) -> Config:
         known = {self.models.opus, self.models.sonnet}
-        problems = anthropic_env_problems(self.runtime.anthropic_env, known)
+        problems: list[str] = []
         unknown = sorted(set(self.prices) - known)
         if unknown:
             problems.append(f"prices given for models that are not configured: {unknown}")
@@ -275,18 +276,15 @@ class Config(_Section):
         return self
 
     def sdk_model_env(self) -> dict[str, str]:
-        """`ANTHROPIC_*` variables for the Agent SDK subprocess (§8.1 item 9).
-
-        Every model setting the SDK exposes is pinned to Sonnet 5.5, including the background
-        ("haiku") model, so that Haiku can never run. P4-01 re-verifies the variable names;
-        user-supplied `runtime.anthropic_env` entries override these but must pass the same
-        rules.
-        """
-        pins = {
-            "ANTHROPIC_DEFAULT_HAIKU_MODEL": self.models.sonnet,
-            "ANTHROPIC_SMALL_FAST_MODEL": self.models.sonnet,
-        }
-        return pins | self.runtime.anthropic_env
+        """The `ANTHROPIC_*` variables for the Agent SDK subprocess (§8.1 item 9): every model
+        setting the SDK exposes pinned to the configured model of its tier, the background
+        ("haiku") model to Sonnet 5.5. Nothing else; there is no user override. P4-01
+        re-verifies the variable names."""
+        env = sdk_model_pins(self.models.opus, self.models.sonnet)
+        problems = anthropic_env_problems(env, opus=self.models.opus, sonnet=self.models.sonnet)
+        if problems:  # unreachable once model IDs are validated; kept as the second line
+            raise ConfigError("; ".join(problems))
+        return env
 
     def to_budgets(self) -> Budgets:
         """The `Run.budgets` record for a run started under this config."""

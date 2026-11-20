@@ -347,6 +347,11 @@
           'title': 'N',
           'type': 'integer',
         }),
+        'n_in_step': dict({
+          'exclusiveMinimum': 0,
+          'title': 'N In Step',
+          'type': 'integer',
+        }),
         'outcome': dict({
           '$ref': '#/$defs/Outcome',
         }),
@@ -367,6 +372,7 @@
         'run_id',
         'step_id',
         'n',
+        'n_in_step',
         'diff_sha',
         'verify',
         'outcome',
@@ -632,6 +638,11 @@
         }),
       }),
       'additionalProperties': False,
+      'description': '''
+        The Critic's review of one host-computed diff (§8.2). Bound to the mirror commit that
+        diff targets, like the integrity report: a verdict on an earlier commit approves nothing
+        newer (§7.4: any edit after INTEGRITY_CHECK re-runs the whole sequence).
+      ''',
       'properties': dict({
         'decision': dict({
           '$ref': '#/$defs/CriticDecision',
@@ -650,6 +661,11 @@
           'title': 'Hunk Mapping',
           'type': 'object',
         }),
+        'mirror_commit': dict({
+          'pattern': '^[0-9a-f]{40}([0-9a-f]{24})?$',
+          'title': 'Mirror Commit',
+          'type': 'string',
+        }),
         'run_id': dict({
           'title': 'Run Id',
           'type': 'string',
@@ -657,6 +673,7 @@
       }),
       'required': list([
         'run_id',
+        'mirror_commit',
         'decision',
       ]),
       'title': 'CriticVerdict',
@@ -1250,7 +1267,19 @@
         }),
       }),
       'additionalProperties': False,
+      'description': '''
+        One evaluation of the §11.2 gate. Bound to the exact mirror commit it judged (§9.5), so
+        a report from an earlier INTEGRITY_CHECK pass can never vouch for a newer commit.
+      ''',
       'properties': dict({
+        'checks': dict({
+          'items': dict({
+            'type': 'string',
+          }),
+          'minItems': 1,
+          'title': 'Checks',
+          'type': 'array',
+        }),
         'coverage_delta_pp': dict({
           'anyOf': list([
             dict({
@@ -1262,6 +1291,11 @@
           ]),
           'default': None,
           'title': 'Coverage Delta Pp',
+        }),
+        'mirror_commit': dict({
+          'pattern': '^[0-9a-f]{40}([0-9a-f]{24})?$',
+          'title': 'Mirror Commit',
+          'type': 'string',
         }),
         'passed': dict({
           'title': 'Passed',
@@ -1305,6 +1339,8 @@
       }),
       'required': list([
         'run_id',
+        'mirror_commit',
+        'checks',
         'passed',
         'test_count_before',
         'test_count_after',

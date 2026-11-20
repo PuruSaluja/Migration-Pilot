@@ -310,12 +310,19 @@ class AgentRuntime(Protocol):
 
         - model, effort and `max_turns` come from `req`; extended thinking is always on
         - expose exactly `mcp__mpilot__<name>` for `req.tool_allowlist`, nothing else
-        - for each tool call the model makes: `guard.before_tool_call()`, then
+        - when a model turn's response arrives, first `guard.after_turn(usage_or_None)`,
+          before forwarding any of that turn's tool calls. On BudgetExceededError the call
+          ends BUDGET_STOP and none of them run: that is what bounds overshoot to one turn
+          (US-5, H7). The crossing turn still counts in `turns` and `usage`; if it was the
+          final answer, the answer is discarded (BUDGET_STOP, `output` None)
+        - then, for each tool call of that turn, in order: `guard.before_tool_call()`
+          (BudgetExceededError -> BUDGET_STOP, the rest do not run), then
           `tools.invoke(name_as_sent, args, req.context)`, then return
           `ToolInvocation.for_model()` to the model. Once the host has refused a call with
           `TOOL_CALL_CAP`, the next tool call is not forwarded: the call ends TOOL_CALL_CAP
-        - after each model turn: `guard.after_turn(usage_or_None)`
-        - validate the final answer against `req.output_schema` (SCHEMA_INVALID if not)
+        - a turn with no tool calls is the final answer: validate it against
+          `req.output_schema` (COMPLETED, or SCHEMA_INVALID if not); a call that reaches
+          `req.max_turns` without one ends MAX_TURNS
 
         Raises:
             UsageLimitError: subscription usage or rate limit (FR-21); never retried on a

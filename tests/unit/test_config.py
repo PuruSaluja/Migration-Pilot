@@ -86,7 +86,6 @@ SPEC_DEFAULTS: dict[str, Any] = {
 NON_NUMERIC_FIELDS = {
     "routing.pins",
     "routing.effort_policy_normalized_from",
-    "runtime.anthropic_env",
 }
 
 
@@ -411,8 +410,6 @@ def _perturbed(value: Any, annotation: Any) -> Any:
         return value + "x"
     if isinstance(value, list):
         return [*value, "a/b"]
-    if isinstance(value, dict):
-        return {**value, "ANTHROPIC_EXTRA": "x"}
     raise AssertionError(f"no perturbation for {annotation}")
 
 

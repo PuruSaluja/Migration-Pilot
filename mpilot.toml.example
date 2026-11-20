@@ -87,9 +87,9 @@ effort_policy = "routed"    # routed | all_high
 
 [runtime]
 kind = "agent_sdk"          # the only runtime in v1
-# Extra ANTHROPIC_* settings for the Agent SDK, on top of the built-in pins that send the
-# background ("haiku") model to Sonnet 5.5. No Haiku in any value, no API key (Q9).
-# anthropic_env = {}
+# There is deliberately no ANTHROPIC_* setting. The SDK gets only fixed model pins: every
+# model alias to the configured ID, and the background ("haiku") model to Sonnet 5.5
+# (SPEC §8.1 items 8-9).
 
 [github]                    # §11.3 control 1
 repos = []                  # "owner/name" repositories the credential provider may touch

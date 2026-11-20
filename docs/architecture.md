@@ -125,11 +125,14 @@ class AgentRuntime(Protocol):
     name: str; capabilities: RuntimeCapabilities     # read-only properties
     def check_lockdown_static(self) -> None: ...     # §8.1 items 1-10 at every start; LockdownViolation
     async def call(self, req: RoleCallRequest, tools: ToolHost, guard: BudgetGuard) -> RoleCallResult:
-        """Thinking always on; exposes only req.tool_allowlist; per tool call:
-        guard.before_tool_call() -> tools.invoke(name_as_sent, args, req.context) -> for_model();
-        after a TOOL_CALL_CAP refusal the next tool call ends the call (TOOL_CALL_CAP);
-        per turn: guard.after_turn(). Raises UsageLimitError, ForbiddenModelError,
-        LockdownViolation, RuntimeCallError."""
+        """Thinking always on; exposes only req.tool_allowlist. Per turn, in this order:
+        when the response arrives, guard.after_turn(usage_or_None) FIRST (a crossed cap ->
+        BUDGET_STOP, none of the turn's tool calls run; overshoot <= one turn); then per tool
+        call: guard.before_tool_call() -> tools.invoke(name_as_sent, args, req.context) ->
+        for_model(); after a TOOL_CALL_CAP refusal the next tool call ends the call
+        (TOOL_CALL_CAP). A turn without tool calls is the final answer (COMPLETED or
+        SCHEMA_INVALID); none by req.max_turns -> MAX_TURNS. Raises UsageLimitError,
+        ForbiddenModelError, LockdownViolation, RuntimeCallError."""
     async def selftest(self) -> SelftestReport: ...
 ```
 
@@ -382,7 +385,7 @@ class Mirror(Protocol):                              # vcs/base.py; runs/<id>/mi
 ```
 
 Value types in `models/artifacts.py`: `FileBlob` (mode, data), `FileDiff` (path, kind, unified), `EntryType`, `DirEntry`, `ArtifactRules` (gitignore, fixed_dirs, tracked: tracked paths are never excluded), `ExportManifest` (export_dir, entries incl. `.git`; `digest()`).
-Snapshot refs: `phase_ref(RunStatus.BUMPED | CODEMODS_APPLIED)` → `refs/mpilot/phase/<name>`, `attempt_ref(n)` → `refs/mpilot/attempt/<n>` with a run-wide `n`.
+Snapshot refs: `phase_ref(RunStatus.BUMPED | CODEMODS_APPLIED)` → `refs/mpilot/phase/<name>`, `attempt_ref(n)` → `refs/mpilot/attempt/<n>` with a run-wide `n`: §12 `Attempt.n` is that same number (unique per run, enforced in the DB); `Attempt.n_in_step` is the per-step ordinal.
 Test doubles: `FakeSandbox`, `FakeDriver`, `MemoryWorkspace`, `MemoryMirror`, `BlobTree` (`testing/infra_doubles.py`).
 
 ## 8. Gate checks (`policy/gate.py`, `policy/test_files.py`, `models/artifacts.py`)
@@ -441,7 +444,8 @@ def binding_violations(inp: GateInput) -> list[Violation]: ...
 def evaluate_gate(checks, inp, *, required) -> IntegrityReport: ...
     # binding_violations first, then every check; ValueError on no checks, empty `required`
     # (no default: the gate can't pass by running nothing), duplicate, reserved ("gate") or
-    # missing check ids, or a violation under a foreign id
+    # missing check ids, or a violation under a foreign id. The report carries
+    # mirror_commit = inp.mirror_commit and checks = the sorted ids that ran (P1-12 gate)
 
 # policy/test_files.py (D2; implementation P2-15). Predicates are independent, not exclusive.
 class TestFileClassifier(Protocol):
@@ -477,8 +481,10 @@ class VcsAdapter(Protocol):                          # no merge and no auto-merg
                           verified: FinalVerification, report: IntegrityReport,
                           verdict: CriticVerdict) -> None: ...
         # the success push. PushRefusedError unless is_mpilot_branch(branch) (and not wip),
-        # branch_status(...).pushable, commit == verified.mirror_commit, report.passed, the
-        # Critic approved and all three from the same run, checked right before the push
+        # branch_status(...).pushable, commit == verified.mirror_commit == report.mirror_commit
+        # == verdict.mirror_commit (a stale pass's report/verdict names an older commit),
+        # report.passed, the Critic approved and all three from the same run, checked right
+        # before the push
     async def push_wip_branch(self, repo: RepoRef, mirror: Mirror, *, branch: str, commit: str) -> None: ...
         # FR-17 escalation branch: mpilot/wip-* only, H1 checks, a mirror commit; a PR on it only
         # with --pr-on-failure, always labelled needs-human
@@ -564,7 +570,7 @@ class BudgetState(BaseModel, frozen=True):
     in_flight_turns: int; in_flight_tokens: int      # the running call's guard charges (crash-safe)
 class Checkpoint(BaseModel, frozen=True):            # after every tool call (NFR-4)
     run_id: RunId; seq: int; at: datetime; status: RunStatus; paused_at_state: RunStatus | None
-    step_id: StepId | None; attempt_n: int | None
+    step_id: StepId | None; attempt_n: int | None      # run-wide Attempt.n (= attempt ref n)
     sticky: dict[str, StickyState]                   # sticky_scope -> state
     budget: BudgetState; failure_history: tuple[FailureHistoryEntry, ...]
     last_tool_call_id: ToolCallId | None; in_flight: InFlightCall | None
@@ -588,9 +594,9 @@ their parent's `doc`.
 | `runs` | `Run` (+ nested `MigrationSpec`, `EnvProfile`, budgets, spent) | upserted |
 | `baselines`, `plans`, `pull_requests`, `escalation_reports` | `Baseline`, `Plan` (+ nested `Step`), `PullRequest`, `EscalationReport` (FR-17; every field is a column; P5-14 fixes the shape of `data`) | one per run, upserted |
 | `checkpoints` | `Checkpoint`, PK `(run_id, seq)` | append-only |
-| `attempts` | `Attempt` (+ nested `Diagnosis`; `signature`, `category` copied out) | append-only |
+| `attempts` | `Attempt` (+ nested `Diagnosis`; `signature`, `category` copied out); `UNIQUE(run_id, n)` (`n` names the attempt ref) and `UNIQUE(run_id, step_id, n_in_step)` | append-only |
 | `tool_calls`, `routing_decisions`, `llm_calls` | `ToolCall`, `RoutingDecision`, `LLMCall` (FK to its decision) | append-only |
-| `test_results`, `final_verifications`, `integrity_reports`, `critic_verdicts` | `TestResult`, `FinalVerification`, `IntegrityReport`, `CriticVerdict` | append-only |
+| `test_results`, `final_verifications`, `integrity_reports`, `critic_verdicts` | `TestResult`, `FinalVerification`, `IntegrityReport`, `CriticVerdict` (the last three with a `mirror_commit` column: the commit judged) | append-only |
 | `migration_notes` | `MigrationNote`, one row per `write_note` call; the current note for a key is its highest `seq` | append-only |
 | `eval_results` | `EvalResult` (bench rows, no run FK) | append-only |
 
@@ -603,9 +609,10 @@ named constraints. SQLite needs `enable_sqlite_fks(engine)` for foreign keys; P1
 
 `models/migrate.py` runs the packaged Alembic migrations from code (`upgrade`, `downgrade`, the
 same on an open connection, and `upgrade_sql`/`downgrade_sql` that print the SQL for any dialect
-without a server). `0001_initial_schema` is generated, then frozen (it imports no app code); a
-test compares the migrated schema to `tables.py`, so changing a table without a new revision
-fails the build.
+without a server). `0001_initial_schema` is generated, then frozen (it imports no app code). It was
+amended once, at the Phase 1 gate, before any database existed outside tests; from the gate on,
+every schema change is a new revision. A test compares the migrated schema to `tables.py`, so
+changing a table without a new revision fails the build.
 
 ### The SQLite store (`models/store.py`, P1-10)
 

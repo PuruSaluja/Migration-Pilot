@@ -32,8 +32,10 @@ from mpilot.models.store import SqliteRunStore, sqlite_engine
 from mpilot.models.tables import (
     DbAttempt,
     DbCheckpoint,
+    DbCriticVerdict,
     DbEscalationReport,
     DbFinalVerification,
+    DbIntegrityReport,
     DbRun,
     DbToolCall,
 )
@@ -499,7 +501,16 @@ def test_an_attempts_signature_and_category_are_copied_from_its_diagnosis(
     assert attempt.diagnosis is not None
     sqlite_store.create_run(run())
     sqlite_store.append(attempt)
-    sqlite_store.append(attempt.model_copy(update={"id": "attempt-2", "diagnosis": None}))
+    sqlite_store.append(
+        attempt.model_copy(
+            update={
+                "id": "attempt-2",
+                "n": attempt.n + 1,
+                "n_in_step": attempt.n_in_step + 1,
+                "diagnosis": None,
+            }
+        )
+    )
     with Session(sqlite_store.engine) as session:
         rows = list(session.scalars(select(DbAttempt).order_by(DbAttempt.seq)))
     assert (rows[0].signature, rows[0].category) == (
@@ -751,3 +762,28 @@ def test_the_store_works_on_any_engine_given_to_the_constructor(tmp_path: Path) 
         assert store.get_run(RUN) == run()
     finally:
         store.close()
+
+
+def test_a_second_attempt_with_the_same_run_wide_number_is_refused(
+    sqlite_store: SqliteRunStore,
+) -> None:
+    """`Attempt.n` names `refs/mpilot/attempt/<n>`: two attempts with one number would make
+    revert-to-best restore the wrong tree (P1-12 review, B2)."""
+    sqlite_store.create_run(run())
+    first = sample(d.Attempt)
+    sqlite_store.append(first)
+    with pytest.raises(StoreError, match="UNIQUE"):
+        sqlite_store.append(first.model_copy(update={"id": "attempt-other", "step_id": "s2"}))
+    assert sqlite_store.rows(RUN, d.Attempt) == [first]
+
+
+def test_reports_and_verdicts_keep_the_commit_they_judged(sqlite_store: SqliteRunStore) -> None:
+    sqlite_store.create_run(run())
+    report, verdict = sample(d.IntegrityReport), sample(d.CriticVerdict)
+    sqlite_store.append(report)
+    sqlite_store.append(verdict)
+    assert sqlite_store.rows(RUN, d.IntegrityReport)[0].mirror_commit == report.mirror_commit
+    assert sqlite_store.rows(RUN, d.CriticVerdict)[0].mirror_commit == verdict.mirror_commit
+    with Session(sqlite_store.engine) as session:
+        assert session.scalar(select(DbIntegrityReport.mirror_commit)) == report.mirror_commit
+        assert session.scalar(select(DbCriticVerdict.mirror_commit)) == verdict.mirror_commit

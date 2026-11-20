@@ -208,6 +208,7 @@ def _append_row(row: AppendRow, at: datetime) -> Base:
                 id=row.id,
                 step_id=row.step_id,
                 n=row.n,
+                n_in_step=row.n_in_step,
                 outcome=row.outcome.value,
                 diff_sha=row.diff_sha,
                 signature=row.diagnosis.signature if row.diagnosis else None,
@@ -217,6 +218,7 @@ def _append_row(row: AppendRow, at: datetime) -> Base:
         case IntegrityReport():
             return DbIntegrityReport(
                 **base,
+                mirror_commit=row.mirror_commit,
                 passed=row.passed,
                 test_count_before=row.test_count_before,
                 test_count_after=row.test_count_after,
@@ -224,7 +226,9 @@ def _append_row(row: AppendRow, at: datetime) -> Base:
                 doc=_doc(row),
             )
         case CriticVerdict():
-            return DbCriticVerdict(**base, decision=row.decision.value, doc=_doc(row))
+            return DbCriticVerdict(
+                **base, mirror_commit=row.mirror_commit, decision=row.decision.value, doc=_doc(row)
+            )
         case MigrationNote():
             return DbMigrationNote(**base, key=row.key, text=row.text)
     raise TypeError(f"not an appendable record: {type(row).__name__}")

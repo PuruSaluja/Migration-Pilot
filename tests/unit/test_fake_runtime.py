@@ -206,7 +206,8 @@ def test_a_zero_allowance_refuses_the_first_call() -> None:
 )
 def test_a_call_never_makes_more_than_cap_plus_one_invocations(names: list[str], cap: int) -> None:
     calls = tuple(ScriptedToolCall(name=n, args={"path": "a"}) for n in names)
-    script = ScriptedCall(turns=(ScriptedTurn(tool_calls=calls), ScriptedTurn(final=ANSWER)))
+    tool_turn = (ScriptedTurn(tool_calls=calls),) if calls else ()
+    script = ScriptedCall(turns=(*tool_turn, ScriptedTurn(final=ANSWER)))
     result, _, h = call_once(script, context=ctx(max_tool_calls=cap))
     assert len(result.tool_call_ids) <= cap + 1
     assert len(h.calls) == len(result.tool_call_ids)
@@ -408,6 +409,8 @@ def test_a_step_can_depend_on_the_request() -> None:
 def test_a_call_cannot_have_an_answer_and_tools_in_one_turn_or_answer_early() -> None:
     with pytest.raises(ValueError, match="either calls tools or gives"):
         ScriptedTurn(tool_calls=(tool("view_file", path="a"),), final=ANSWER)
+    with pytest.raises(ValueError, match="exactly one"):
+        ScriptedTurn()  # a turn that does nothing is not a model response
     with pytest.raises(ValueError, match="only the last turn"):
         ScriptedCall(turns=(ScriptedTurn(final=ANSWER), ScriptedTurn(final=ANSWER)))
     with pytest.raises(ValueError, match="no final answer"):

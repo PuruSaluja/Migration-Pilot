@@ -179,10 +179,12 @@ class VcsAdapter(Protocol):
         Raises PushRefusedError unless all of these hold, checked right before the push:
         - `is_mpilot_branch(branch)` and not a `mpilot/wip-*` branch
         - `branch_status(...).pushable` (H1, A9)
-        - `commit == verified.mirror_commit`, the commit final verification ran on (§9.5)
+        - `commit == verified.mirror_commit == report.mirror_commit ==
+          verdict.mirror_commit`: the commit final verification ran on, the gate judged and
+          the Critic reviewed (§9.5). A passing report or approving verdict from an earlier
+          INTEGRITY_CHECK pass names an older commit, so it can never be paired with this one
         - `report.passed` (the integrity gate) and `verdict.decision` is approve (FR-15)
-        - `verified`, `report` and `verdict` belong to the same run, so a stale report or
-          verdict can't be paired with a newer commit
+        - `verified`, `report` and `verdict` belong to the same run
         """
         ...
 

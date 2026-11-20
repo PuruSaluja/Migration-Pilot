@@ -259,6 +259,19 @@ def test_gate_passes_with_clean_checks() -> None:
     assert report.resolved_versions == {"react": "18.3.1"}
 
 
+def test_the_report_names_the_commit_it_judged_and_the_checks_that_ran() -> None:
+    """P1-12 review B1/S1: the push choke point compares `mirror_commit` with the commit it
+    pushes, and the PR attestation lists `checks`."""
+    inp = _input()
+    report = gate.evaluate_gate(
+        [ConstantCheck(id="integrity.i"), ConstantCheck(id="integrity.a")],
+        inp,
+        required=("integrity.a",),
+    )
+    assert report.mirror_commit == inp.mirror_commit
+    assert report.checks == ["integrity.a", "integrity.i"]  # every check that ran, sorted
+
+
 def test_gate_collects_violations_and_removed_api_usages() -> None:
     h = violation("integrity.h", "removed_api", "src/a.js:3 ReactDOM.render")
     checks = [

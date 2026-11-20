@@ -1,9 +1,12 @@
 """Initial schema: a table for every SPEC §12 model, plus checkpoints, final verification,
-migration notes and the escalation report (P1-09).
+migration notes and the escalation report (P1-09; amended at the P1-12 gate, before any
+database existed outside tests: attempt numbering and commit-bound integrity reports and
+Critic verdicts).
 
 Generated with Alembic autogenerate from `mpilot.models.tables`, then frozen: it imports no
-application code, so later changes to `tables.py` never alter what this revision does. Later
-changes are new revisions. A test compares the migrated schema with `tables.py`.
+application code, so later changes to `tables.py` never alter what this revision does. From
+the Phase 1 gate on, changes are new revisions. A test compares the migrated schema with
+`tables.py`.
 
 Revision ID: 0001
 Revises:
@@ -79,6 +82,7 @@ def upgrade() -> None:
         sa.Column("id", sa.String(), nullable=False),
         sa.Column("step_id", sa.String(), nullable=False),
         sa.Column("n", sa.Integer(), nullable=False),
+        sa.Column("n_in_step", sa.Integer(), nullable=False),
         sa.Column("outcome", sa.String(), nullable=False),
         sa.Column("diff_sha", sa.String(), nullable=False),
         sa.Column("signature", sa.String(), nullable=True),
@@ -90,12 +94,18 @@ def upgrade() -> None:
             "outcome IN ('improved', 'same', 'regressed', 'green')",
             name=op.f("ck_attempts_outcome_known"),
         ),
-        sa.CheckConstraint("n > 0", name=op.f("ck_attempts_n_positive")),
+        sa.CheckConstraint(
+            "n > 0 AND n_in_step > 0 AND n_in_step <= n", name=op.f("ck_attempts_numbers_valid")
+        ),
         sa.ForeignKeyConstraint(
             ["run_id"], ["runs.id"], name=op.f("fk_attempts_run_id_runs"), ondelete="CASCADE"
         ),
         sa.PrimaryKeyConstraint("seq", name=op.f("pk_attempts")),
         sa.UniqueConstraint("id", name=op.f("uq_attempts_id")),
+        sa.UniqueConstraint("run_id", "n", name=op.f("uq_attempts_run_id_n")),
+        sa.UniqueConstraint(
+            "run_id", "step_id", "n_in_step", name=op.f("uq_attempts_run_id_step_id_n_in_step")
+        ),
     )
     with op.batch_alter_table("attempts", schema=None) as batch_op:
         batch_op.create_index("ix_attempts_run_id_seq", ["run_id", "seq"], unique=False)
@@ -136,6 +146,7 @@ def upgrade() -> None:
     op.create_table(
         "critic_verdicts",
         sa.Column("run_id", sa.String(), nullable=False),
+        sa.Column("mirror_commit", sa.String(), nullable=False),
         sa.Column("decision", sa.String(), nullable=False),
         sa.Column("doc", JSON_DOC, nullable=False),
         sa.Column("seq", sa.Integer(), autoincrement=True, nullable=False),
@@ -197,6 +208,7 @@ def upgrade() -> None:
     op.create_table(
         "integrity_reports",
         sa.Column("run_id", sa.String(), nullable=False),
+        sa.Column("mirror_commit", sa.String(), nullable=False),
         sa.Column("passed", sa.Boolean(), nullable=False),
         sa.Column("test_count_before", sa.Integer(), nullable=False),
         sa.Column("test_count_after", sa.Integer(), nullable=False),

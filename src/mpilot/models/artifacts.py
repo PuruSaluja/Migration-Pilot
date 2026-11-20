@@ -51,7 +51,7 @@ def check_rel_path(path: str) -> str:
 
 
 def _check_git_sha(value: str) -> str:
-    if not _GIT_SHA.match(value):
+    if not _GIT_SHA.fullmatch(value):
         raise ValueError("must be a full lowercase hex git object id")
     return value
 
@@ -69,7 +69,7 @@ class TreeEntry(ArtifactModel):
     @field_validator("sha256")
     @classmethod
     def _sha(cls, v: str) -> str:
-        if not _SHA256.match(v):
+        if not _SHA256.fullmatch(v):
             raise ValueError("sha256 must be 64 lowercase hex chars")
         return v
 
@@ -164,7 +164,7 @@ class WorkspaceDiff(ArtifactModel):
     @field_validator("target_digest")
     @classmethod
     def _digest(cls, v: str) -> str:
-        if not _SHA256.match(v):
+        if not _SHA256.fullmatch(v):
             raise ValueError("target_digest must be 64 lowercase hex chars")
         return v
 

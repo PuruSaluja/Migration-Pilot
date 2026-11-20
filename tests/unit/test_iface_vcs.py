@@ -148,12 +148,14 @@ def _verified(commit: str) -> FinalVerification:
     )
 
 
-def _gate(passed: bool = True) -> IntegrityReport:
+def _gate(passed: bool = True, commit: str = "a" * 40) -> IntegrityReport:
     violations = (
         [] if passed else [Violation(check_id="integrity.a", code="p0_failed", message="t1 failed")]
     )
     return IntegrityReport(
         run_id=RunId("r"),
+        mirror_commit=commit,
+        checks=["integrity.a"],
         passed=passed,
         violations=violations,
         test_count_before=1,
@@ -161,8 +163,10 @@ def _gate(passed: bool = True) -> IntegrityReport:
     )
 
 
-def _verdict(decision: CriticDecision = CriticDecision.APPROVE) -> CriticVerdict:
-    return CriticVerdict(run_id=RunId("r"), decision=decision)
+def _verdict(
+    decision: CriticDecision = CriticDecision.APPROVE, commit: str = "a" * 40
+) -> CriticVerdict:
+    return CriticVerdict(run_id=RunId("r"), mirror_commit=commit, decision=decision)
 
 
 def _push(vcs: RecordingVcs, branch: str, commit: str = "a" * 40, **kw: Any) -> None:
@@ -274,6 +278,26 @@ def test_push_refuses_a_report_or_verdict_from_another_run() -> None:
     with pytest.raises(PushRefusedError, match="different runs"):
         _push(vcs, "mpilot/ok", verdict=_verdict().model_copy(update={"run_id": RunId("other")}))
     assert vcs.pushes == []
+
+
+def test_push_refuses_a_passing_report_or_verdict_from_an_earlier_commit() -> None:
+    """P1-12 review B1: pass 1 judged C1 (report passed, Critic said revise), pass 2 judged C2
+    (report failed), pass 3 verified C3. Pairing C1's passing report or an approval of C1
+    with C3 must be refused, even though everything is from the same run."""
+    c1, c3 = "1" * 40, "3" * 40
+    vcs = RecordingVcs()
+    current = {
+        "verified": _verified(c3),
+        "report": _gate(commit=c3),
+        "verdict": _verdict(commit=c3),
+    }
+    with pytest.raises(PushRefusedError, match="judge exactly this commit"):
+        _push(vcs, "mpilot/ok", c3, **(current | {"report": _gate(commit=c1)}))
+    with pytest.raises(PushRefusedError, match="judge exactly this commit"):
+        _push(vcs, "mpilot/ok", c3, **(current | {"verdict": _verdict(commit=c1)}))
+    assert vcs.pushes == []
+    _push(vcs, "mpilot/ok", c3, **current)  # all three about C3: pushed
+    assert vcs.pushes == [("mpilot/ok", c3)]
 
 
 def test_draft_pr_rules_for_heads_and_wip_branches() -> None:

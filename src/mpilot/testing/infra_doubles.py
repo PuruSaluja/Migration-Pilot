@@ -450,6 +450,10 @@ class RecordingVcs:
         await self._check_branch(repo, branch)
         if commit != verified.mirror_commit:
             raise PushRefusedError("only the commit final verification ran on is pushed")
+        if report.mirror_commit != commit or verdict.mirror_commit != commit:
+            raise PushRefusedError(
+                "the integrity report and the Critic verdict must judge exactly this commit"
+            )
         if not report.passed:
             raise PushRefusedError("the integrity gate did not pass")
         if len({verified.tests.run_id, report.run_id, verdict.run_id}) != 1:

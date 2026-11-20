@@ -86,8 +86,8 @@ class ScriptedTurn(_Frozen):
 
     @model_validator(mode="after")
     def _check(self) -> Self:
-        if self.final is not None and self.tool_calls:
-            raise ValueError("a turn either calls tools or gives the final answer")
+        if (self.final is not None) == bool(self.tool_calls):
+            raise ValueError("a turn either calls tools or gives the final answer, exactly one")
         return self
 
 

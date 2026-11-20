@@ -85,7 +85,7 @@ class Checkpoint(StateModel):
     status: RunStatus
     paused_at_state: RunStatus | None = None  # set exactly in PAUSED_LIMIT
     step_id: StepId | None = None
-    attempt_n: PositiveInt | None = None  # 1-based attempt on step_id
+    attempt_n: PositiveInt | None = None  # run-wide `Attempt.n` of the attempt in progress
     #: sticky_scope(...) -> state. Never loses a flag from one checkpoint to the next.
     sticky: dict[StickyScope, StickyState] = Field(default_factory=dict)
     budget: BudgetState = Field(default_factory=BudgetState)
@@ -103,7 +103,7 @@ class Checkpoint(StateModel):
     @field_validator("latest_snapshot_ref")
     @classmethod
     def _ref(cls, v: str | None) -> str | None:
-        if v is not None and not _SNAPSHOT_REF.match(v):
+        if v is not None and not _SNAPSHOT_REF.fullmatch(v):
             raise ValueError(f"not a host snapshot ref: {v!r}")
         return v
 

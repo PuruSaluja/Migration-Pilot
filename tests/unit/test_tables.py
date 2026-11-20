@@ -17,7 +17,7 @@ from sqlalchemy import Engine, create_engine, func, select
 from sqlalchemy.exc import IntegrityError, StatementError
 from sqlalchemy.orm import Session
 from sqlalchemy.schema import CreateIndex, CreateTable
-from test_domain_models import NOW, RUN, SAMPLES, SPEC
+from test_domain_models import NOW, RUN, SAMPLES, SHA, SPEC
 
 from mpilot.models import artifacts, state, tables
 from mpilot.models import domain as d
@@ -521,8 +521,16 @@ def test_closed_value_sets(engine: Engine) -> None:
     sample = SAMPLES[d.CriticVerdict]()
     assert isinstance(sample, d.CriticVerdict)
     with pytest.raises(IntegrityError):
-        commit(engine, DbCriticVerdict(run_id=RUN, decision="shrug", doc={}, recorded_at=NOW))
-    commit(engine, DbCriticVerdict(run_id=RUN, decision="approve", doc={}, recorded_at=NOW))
+        commit(
+            engine,
+            DbCriticVerdict(
+                run_id=RUN, mirror_commit=SHA, decision="shrug", doc={}, recorded_at=NOW
+            ),
+        )
+    commit(
+        engine,
+        DbCriticVerdict(run_id=RUN, mirror_commit=SHA, decision="approve", doc={}, recorded_at=NOW),
+    )
     with pytest.raises(IntegrityError):
         commit(
             engine,
@@ -557,6 +565,7 @@ def test_closed_value_sets(engine: Engine) -> None:
             engine,
             DbIntegrityReport(
                 run_id=RUN,
+                mirror_commit=SHA,
                 passed=True,
                 test_count_before=-1,
                 test_count_after=0,
@@ -588,6 +597,7 @@ def test_closed_value_sets(engine: Engine) -> None:
                 id="a-1",
                 step_id="s-1",
                 n=0,
+                n_in_step=1,
                 outcome="improved",
                 diff_sha="x",
                 signature=None,
@@ -652,3 +662,53 @@ def test_module_exports_every_table_class() -> None:
     }
     assert classes <= set(tables.__all__)
     assert {t.__tablename__ for t in map(tables.__dict__.get, classes)} == set(Base.metadata.tables)
+
+
+# ---------------------------------------------------------------- P1-12 gate: attempt numbers
+
+
+def _attempt_row(
+    n: int, n_in_step: int, id: str, run_id: str = RUN, step_id: str = "s-1"
+) -> DbAttempt:
+    return DbAttempt(
+        run_id=run_id,
+        id=id,
+        step_id=step_id,
+        n=n,
+        n_in_step=n_in_step,
+        outcome="improved",
+        diff_sha="x",
+        signature=None,
+        category=None,
+        doc={},
+        recorded_at=NOW,
+    )
+
+
+def test_attempt_numbers_are_unique_per_run_because_they_name_snapshot_refs(
+    engine: Engine,
+) -> None:
+    with_run(engine)
+    # the first attempt of step s-1, then the first of step s-2
+    commit(engine, _attempt_row(1, 1, "a-1"), _attempt_row(2, 1, "a-2", step_id="s-2"))
+    with pytest.raises(
+        IntegrityError, match=r"UNIQUE constraint failed: attempts\.run_id, attempts\.n\b"
+    ):
+        commit(engine, _attempt_row(2, 2, "a-3"))  # a second refs/mpilot/attempt/2
+    commit(engine, run_row(id="run-other"))
+    commit(engine, _attempt_row(2, 2, "a-4", run_id="run-other"))  # another run's mirror: fine
+    assert count(engine, DbAttempt) == 3
+
+
+def test_a_step_cannot_have_two_attempts_with_the_same_number(engine: Engine) -> None:
+    with_run(engine)
+    commit(engine, _attempt_row(1, 1, "a-1"))
+    with pytest.raises(IntegrityError, match=r"attempts\.step_id, attempts\.n_in_step"):
+        commit(engine, _attempt_row(2, 1, "a-2"))  # s-1's attempt 1 again, under a new n
+
+
+@pytest.mark.parametrize(("n", "n_in_step"), [(0, 1), (1, 0), (2, 3)])
+def test_attempt_numbers_must_be_consistent(engine: Engine, n: int, n_in_step: int) -> None:
+    with_run(engine)
+    with pytest.raises(IntegrityError, match="CHECK"):
+        commit(engine, _attempt_row(n, n_in_step, "a-x"))

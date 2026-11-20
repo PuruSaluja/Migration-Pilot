@@ -4,12 +4,24 @@
 Phase 1: Foundations
 
 ## Next task
-[OPUS] P1-12: **Phase 1 gate**: spec-reviewer on the interfaces; fix findings; freeze `docs/architecture.md` (see the Phase 1 table, DoD in SPEC §16.4 P1). This needs Opus 5.5 at high effort: start the session on that model (the P1-11 session ran on Sonnet 5.5). Gate checks: `mpilot --help` works, all checks green, spec-reviewer approves. Open questions to bring to the gate: `Attempt.n` per step vs run-wide (P1-09/P1-10 notes), and `IntegrityReport`/`CriticVerdict` not recording the commit they judged (P1-08 note).
+[OPUS] P1-12b: Phase 1 gate fix B3, resume completeness (FR-21 "completed role calls are never repeated", "a resume never de-escalates"). From the gate review:
+- `LLMCall` gains `stop: StopReason | None`, `turns`, `output: dict | None` (redacted, schema-valid), `step_id`, `attempt_id`, `parent_call_id` (nested `explore`). Then a pause after the Diagnoser finishes but before the Editor starts doesn't re-run the Diagnoser or lose its hypotheses; same for Analyzer -> Planner. The Analyzer's `AnalysisReport` needs a home.
+- `ToolCall` gains `role_call_id` (also needed for FR-18 replay, Langfuse span nesting, and the §8.5 check that the Critic cites files it read itself).
+- `Checkpoint` gains per-`StickyScope` routing counters (policy denials, schema-invalid count, last confidence, Explorer question hashes), and `covers()` refuses lowering them. Otherwise one denial before a crash and one after never fire trigger 3.
+- Update `llm_call_from`, tables (amend 0001: still pre-freeze), store, SPEC §12 + §20, docs; spec-reviewer on the diff (touches the router inputs).
+Run on Opus 5.5 at high effort.
 
 ## In progress
 (none)
 
 ## Done
+- P1-12a (2026-11-20): Phase 1 gate, first part. The gate review (spec-reviewer) returned CHANGES REQUIRED with 6 blocking issues; the gate was split into P1-12a-d (over half a day). Fixed here, and the spec-reviewer approved the diff:
+  - B4 (lockdown): `runtime.anthropic_env` removed. It let config override the Sonnet background pin and pass `ANTHROPIC_BASE_URL`, which could send the OAuth token elsewhere. The SDK now gets a fixed pin table (`model_policy.SDK_MODEL_PIN_TIERS`, read-only): all four aliases, each pinned to its tier's configured ID, background models to Sonnet. `anthropic_env_problems` is a strict check for P4-08: every pin present and exact, no other `ANTHROPIC_*` name.
+  - B6: `AgentRuntime.call` contract states the order: `after_turn` when the response arrives, before the turn's tools; a crossing turn's answer is discarded. `ScriptedTurn` must call tools or answer.
+  - B2: `Attempt.n` is run-wide (= `refs/mpilot/attempt/<n>`), new `Attempt.n_in_step`, `UNIQUE(run_id, n)` and `UNIQUE(run_id, step_id, n_in_step)`.
+  - B1 + S1: `IntegrityReport.mirror_commit` + `checks`, `CriticVerdict.mirror_commit`; `push_branch` requires commit == final verification == report == verdict. Test with the review's stale-pass scenario.
+  - Also: every SHA/ref validator uses `fullmatch` (they accepted a trailing newline).
+  - SPEC §7.4, §8.1 item 9, §9.5, §10.1, §12, and 3 §20 rows. 1185 green.
 - P1-11 (2026-11-20): `agents/fake_runtime.py` (`FakeRuntime`, scripted `ScriptedCall`/`ScriptedTurn`/`ScriptedToolCall`, the shared `play()` engine, `PlayedCall` history) and `agents/cassette.py` (JSONL format, `write_cassette` with a mandatory redactor, `read_cassette`, `CassetteRuntime` replay). Scripts run through the real `ToolHost` and `BudgetGuard`: scripted denials (even `Bash`) are recorded, per-call tool cap (cap+1 invocations, then TOOL_CALL_CAP), budget stops before a crossing turn's tools run, MAX_TURNS, schema validation (SCHEMA_INVALID), `UsageLimitError`/`RuntimeCallError` raised after the last turn, and misreporting overrides (other model, thinking off, wrong effort) so `check_result` can be tested. Cassette replay keys on `request_hash()`, re-issues the recorded tool calls to the live host (allow/deny and denial code must equal the recording), and a mismatch names the changed request parts. Shared helpers added to `agents/runtime.py`: `schema_errors`, `llm_call_from`, `RoleCallRequest.content()`/`part_hashes()` (`request_hash` unchanged). New errors: `ScriptDivergedError`, `CassetteMismatchError` (both `RuntimeCallError`s). `jsonschema` is now a direct dependency (+ `types-jsonschema` dev). 87 new tests (the acceptance run writes ToolCall and LLMCall rows to the real `SqliteRunStore`; three engine mutations checked to fail the suite). 1160 green.
 - P1-10 (2026-11-20): `models/store.py`: `SqliteRunStore` (the `RunStore`) + `sqlite_engine`. WAL, `synchronous=NORMAL`, FKs on, 30 s busy timeout; explicit transactions (writes `BEGIN IMMEDIATE`, reads `BEGIN`), so a checkpoint's `covers()` read and insert are atomic. `open()` creates the folder, migrates to head, refuses a DB from a newer version. Protocol extended: `MigrationNote` (in `AppendRow`) and `EscalationReport` (in `SingleRow`) as new `models/artifacts.py` records, `append_final_verification`/`final_verifications`, `StoreError(MpilotError, ValueError)`; `MemoryStore` updated to match. 66 new tests: one contract run against the double and the real store, then WAL/pragmas, reopen persistence, constraint refusals with no partial rows, columns-vs-document consistency, `Clock`-set `recorded_at`, a second writer waiting instead of failing, readers not blocked, two stores racing checkpoints (checked to fail if `BEGIN IMMEDIATE` is removed). 1073 green.
 - P1-09 (2026-11-20): `models/tables.py` (SQLAlchemy 2: 16 tables, each holding the whole Pydantic model as JSON in `doc` plus derived columns; `UtcDateTime`, JSON→JSONB on Postgres, named constraints, NFR-12 and model invariants as CHECKs, FK cascade from `runs`), `models/migrate.py` (Alembic driven from code, migrations shipped in the package, `upgrade_sql`/`downgrade_sql` for any dialect, `enable_sqlite_fks`), frozen `0001_initial_schema` (autogenerated, then made import-free). 2 new test files, 70 new tests: constraints on a real migrated SQLite with FKs on, every §12 class mapped (checked against SPEC), columns ⊆ model fields, upgrade/downgrade/upgrade, no drift between migration and `tables.py`, Postgres DDL and migration SQL. docs/architecture.md gained a Tables section. 1007 green.
@@ -103,6 +115,19 @@ Phase 1: Foundations
   - `FakeRuntime` does not run `check_result` itself; the orchestrator does (tests call it explicitly). Misreporting is scripted on purpose.
   - Test helpers shared by the two new test files live in `tests/unit/runtime_helpers.py` (not a test module).
 
+- 2026-11-20 (P1-12a), design points for the owner:
+  - **`runtime.anthropic_env` is gone** (the P1-05/P1-06 notes above describe it; they are superseded). The SDK's model variables are fixed in code. If P4-01 finds another model variable, it is added to `SDK_MODEL_PIN_TIERS`. `ANTHROPIC_MODEL` is refused: the router sets the model per call.
+  - **Migration 0001 was amended in place, not followed by 0002.** No database exists outside tests, and this gate is the freeze point. From the gate on, schema changes are new revisions (the 0001 docstring and docs say so). P1-12b may amend it once more, still pre-freeze.
+  - Deferred from the P1-12a review, for later tasks:
+    - P7-01: the Critic's model `output_schema` must not contain `mirror_commit`/`run_id`. The host sets them from `WorkspaceDiff.target`. Consider binding the verdict to `diff.base` too, so approving a partial (step) diff can't stand in for approving the whole `base_sha -> commit` diff.
+    - P1-12d: consider `BudgetManager.start_attempt` returning `(n, n_in_step)`, so callers can't derive them inconsistently.
+    - P4-01: also check non-`ANTHROPIC_*` model settings (`CLAUDE_CODE_SUBAGENT_MODEL`, the SDK's `fallback_model` option) for the item-8 env builder and the option builder.
+  - Gate-review suggestions S2-S5, to decide in P1-12d:
+    - S2: document that the EventBus persists every record before fan-out (its own table), and mark `add_eval`/`evals` plus `EvalResult`'s missing `run_id`/`bench_id` as a P9 draft.
+    - S3: cassette v1: `ScriptedTurn.usage: Usage | None` (None -> `after_turn(None)`), optional `ScriptedCall.total_usage`, raw-string `final` for a non-JSON SCHEMA_INVALID answer. Then the fake can exercise the estimate path and P4-22 can record what the SDK really reports.
+    - S4: `binding_violations` needs each plan step once, strictly in order. A post-INTEGRITY_CHECK repair or a Critic revise on an earlier step (especially `test_touch`) can't pass. Settle segment semantics before P6-01.
+    - S5: `Verifier.baseline` can't represent a red install/build/typecheck at baseline (`Baseline.runs` needs ≥ 1 run, no stage results). Specify `BaselineRedError` or add stage results.
+
 ## Task list
 
 How to read it:
@@ -134,7 +159,10 @@ How to read it:
 | P1-09 | SONNET | SQLAlchemy tables + Alembic initial migration | §12 | P1-08 | Upgrade and downgrade on a temp DB; DDL compiles for SQLite and Postgres dialects |
 | P1-10 | SONNET | `RunStore` implementation, SQLite in WAL mode | §12, NFR-4 | P1-09 | Round-trip of every model; `journal_mode` = wal; checkpoint then latest_checkpoint returns it |
 | P1-11 | SONNET | `FakeRuntime` (scripted, goes through a `ToolHost`, can raise `UsageLimitError`) + `CassetteRuntime` replay (B6) | §18 rule 7, FR-21 | P1-07, P1-10 | Using a minimal test-double ToolHost: scripted run writes ToolCall and LLMCall rows; a scripted denial is recorded; a cassette request-hash mismatch fails loudly |
-| P1-12 | OPUS | **Phase 1 gate:** spec-reviewer on the interfaces; fix findings; freeze `docs/architecture.md` | §16.4 P1 DoD | P1-01…11 | `mpilot --help` works; checks green; spec-reviewer approves |
+| P1-12a | OPUS | Gate fixes B4 (no `ANTHROPIC_*` passthrough), B6 (call-order contract), B2 (run-wide `Attempt.n`), B1+S1 (report/verdict bound to the commit) | §8.1, §9.5, §12 | P1-01…11 | Done 2026-11-20; spec-reviewer approved the diff |
+| P1-12b | OPUS | Gate fix B3: resume completeness (completed role-call outputs and stop reasons on `LLMCall`, `ToolCall.role_call_id`, per-scope routing counters in `Checkpoint`) | FR-21, FR-18, §8.4, §12 | P1-12a | A pause between two role calls resumes without re-running the first; routing counters survive a crash (trigger 3 still fires); `covers()` refuses lowering them; spec-reviewer approves |
+| P1-12c | OPUS | Gate fix B5: process coordination (driver lease on `RunStore`, cancel request, `save_run` only by the lease holder or compare-and-set, checkpoint authoritative with `Run` updated in the same transaction; `decide_plan`/`cancel` semantics with and without a live driver) | §13.1, FR-21, NFR-4, C6 | P1-12b | Tests: cancel from another process reaches a live driver; no lost END_CANCELLED; two resumes can't both drive a run; spec-reviewer approves |
+| P1-12d | OPUS | **Phase 1 gate:** full spec-reviewer re-review of the interface set; decide S2–S5; freeze `docs/architecture.md` | §16.4 P1 DoD | P1-12c | `mpilot --help` works; checks green; spec-reviewer approves |
 
 ### Phase 2: Sandbox, detection, baseline
 | ID | Tag | Task | Refs | Deps | Acceptance |
