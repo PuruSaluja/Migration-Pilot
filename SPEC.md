@@ -1106,9 +1106,10 @@ Quality is the metric, not speed. With roughly two-thirds of tasks on Sonnet, ex
 | Q5 Monorepos? | Excluded from the v1 suite; detection supports simple cases |
 | Q6 L4 reviewers? | Owner + 1–2 peers. With only one reviewer, report as single-reviewer and skip κ |
 | Q7 Dev host OS? | Ubuntu 24.04 on WSL2 (Windows 11), repo on the Linux filesystem. Native Docker Engine inside WSL (not Docker Desktop) with gVisor `runsc`; runc fallback with a recorded warning if `runsc` fails on the WSL kernel (NFR-10). Setup and checks: `docs/requirements.md` |
+| Q8 GitHub host for test repos? | The owner's personal account `PuruSaluja`; test repos and forks live there, and the PAT is scoped to those repos only (§11.6) |
 
 ### 17.3 Still open (Claude Code: ask before the relevant phase)
-- Which personal GitHub account or org hosts the test repos and forks.
+(none)
 
 ---
 
@@ -1166,6 +1167,7 @@ Quality is the metric, not speed. With roughly two-thirds of tasks on Sonnet, ex
 | 2026-11-19 | Raised per-run safety caps (300 turns, 8M tokens, 120 min, 6/40 attempts); bench parallelism 1, batches of 3 | Caps must not cut off productive Opus runs; Pro limits |
 | 2026-11-19 | v1.3: effort routing (medium/high), strict. Product: router picks effort as well as model; Opus always high; medium only for Sonnet Explorer, PR Writer and trivial first-attempt Editor edits; sticky medium→high escalation; `routing.effort_policy` (`routed`/`all_high`); stricter effort quality guard. Build: new [SONNET-MED] tag for logic-free tasks; `explorer` and `test-runner` subagents at medium | Owner decision: save usage on mechanical work without touching reasoning-heavy or safety-critical calls; quality protected by the pre-registered guard |
 | 2026-11-19 | Dev host = Ubuntu 24.04 on WSL2 with native Docker Engine + gVisor (Q7, closes the §17.3 host-OS question) | gVisor needs a native Linux engine; one working copy on the Linux filesystem avoids drift |
+| 2026-11-19 | Test repos and forks on the personal GitHub account `PuruSaluja` (Q8, closes §17.3) | Owner decision |
 
 ---
 

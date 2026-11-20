@@ -50,7 +50,7 @@ if native gh; then
   pass "gh $(gh --version | head -1 | awk '{print $3}')"
   gh auth status >/dev/null 2>&1 && pass "gh authenticated" || warn "gh not logged in (gh auth login) - needed from Phase 4"
 else bad "gh missing (run scripts/setup-dev.sh)"; fi
-if native gitleaks; then pass "gitleaks $(gitleaks version 2>/dev/null)"; else bad "gitleaks missing (run scripts/setup-dev.sh)"; fi
+if native gitleaks; then pass "gitleaks installed"; else bad "gitleaks missing (run scripts/setup-dev.sh)"; fi
 
 echo "Not needed on the host (run inside sandbox images)"
 for t in node npm java mvn; do
