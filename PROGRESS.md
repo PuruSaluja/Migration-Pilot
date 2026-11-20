@@ -4,12 +4,13 @@
 Phase 1: Foundations
 
 ## Next task
-[SONNET] P1-04: Pydantic v2 domain models for every §12 class, plus `TestResult.passed_ids`/`failed_ids` (D9) (see the Phase 1 table). Run the session on Sonnet 5.5 at high effort.
+[SONNET] P1-05: config loader (`mpilot.toml` < env `MPILOT_*` < CLI), every §6 default, tier→model ID, `routing.policy`/`effort_policy`, empty price table (B7), `config_hash`, `mpilot.toml.example` (see the Phase 1 table). Run the session on Sonnet 5.5 at high effort.
 
 ## In progress
 (none)
 
 ## Done
+- P1-04 (2026-11-20): `models/domain.py`, a Pydantic v2 model for every §12 class (+ nested `PackageChange`, `Budgets`, `Spent`, `FailedTest`, `VerifyStageResult`, `VerifyResult`, `Violation`, `RubricScores`, `HumanReview`), D9 `passed_ids`/`failed_ids` + `executed_count`. `RoutingPolicy`/`EffortPolicy` added to `core/types.py`. 99 new tests (round trip per model, §12 field-presence table checked against SPEC, invariants, syrupy JSON-schema snapshot). 283 tests green. Also made two P1-03 timeout tests robust (3 s instead of 0.5 s; one failed once under load).
 - P1-03 (2026-11-20): `core/spawn.py` (`run`/`start`/`inherit`: explicit env only, absolute argv[0] and PATH entries, token refused in argv/env keys/cwd and in env values unless `pass_github_token`, own session, timeout kills the group and returns within a grace period) and `core/github_token.py` (read once from `MPILOT_GITHUB_TOKEN` or a 0600, owner-only, non-symlink file outside any git work tree; env var removed and its bytes wiped in place so `/proc/<pid>/environ` no longer shows it). CLI scrubs first thing. AST lint forbids every process-starting form outside `spawn.py`. Spec-reviewer: first pass 2 blockers + 5 non-blocking, all fixed; second pass approved, and 3 of its 5 non-blocking points fixed (duplicate env entries all wiped, reap on interrupt during the kill grace, `from importlib import import_module` in the lint). 184 tests green.
 - P1-02 (2026-11-20): `core/` = `types.py` (enums, ID NewTypes + generators, `ExitCode`, `exit_code_for`, `Usage.cap_tokens`), `tokens.py` (chars/3), `clock.py` (`Clock`, `SystemClock`, `FakeClock`), `errors.py`. 80 tests, all checks green.
 - P1-01 (2026-11-20): scaffold. `pyproject.toml` + `uv.lock` (full runtime/dev dependency list from `docs/requirements.md`), ruff/mypy strict/pytest config, E1 marker policy as a pytest plugin (`mpilot.testing.policy`, tested with pytester), `.pre-commit-config.yaml` (local hooks: ruff, mypy, gitleaks; pytest on pre-push; installed), `.gitignore`, JSON-lines logging (`mpilot.core.log`), Typer app with every §13.1 command stubbed (exit 1 + JSON log). 24 tests, all checks green.
@@ -39,6 +40,11 @@ Phase 1: Foundations
 - 2026-11-20 (P1-03), left open from review pass 2, owner may want a spec note:
   - Residual risk: the token also lives in process heap memory. A same-uid child could read it through `/proc/<ppid>/mem` only if `kernel.yama.ptrace_scope=0`; this host has 1, which blocks it. `prctl(PR_SET_DUMPABLE, 0)` would close it, but it makes `/proc/self/*` unreadable to mpilot itself, so not done. Candidate for a SPEC §17.1 risk row.
   - `spawn.run` does not kill background grandchildren after a normal exit (the child is already reaped, so killing its group id could hit a reused pid). Callers start only trusted host tools. If a grandchild holds the pipes past `timeout_s`, the result reports `timed_out=True` even though the direct child had exited.
+- 2026-11-20 (P1-04), model choices where §12 is only a sketch (none changes a [REC] decision, so no §20 row):
+  - Added `run_id` to Baseline, Attempt, ToolCall, LLMCall, IntegrityReport, CriticVerdict ("everything is keyed by run_id", §7.3; the DB needs it); `confidence` on Diagnosis (§8.2/§8.4); `changelog_refs` on Step (FR-7).
+  - `Baseline.runs` is `list[TestResult]` (the 3 baseline runs), `Step.attempts` is a count, `Run.base_sha` is optional until cloned, `EnvProfile.detection_sources` is `dict[str, str]` (field → source), `EvalResult.system` is a plain string, `RubricScores` has the four §14.3 criteria (1–5). Cheap to change before P1-09 if a later task needs different shapes.
+  - Invariants enforced at the model level (spec-derived): Opus never at medium (LLMCall, RoutingDecision); no "haiku" in `LLMCall.model`; `escalated_from` implies opus, `effort_escalated_from` implies high; a test is not both passed and failed; flaky ids disjoint from P0; denied tool call needs `deny_reason`; `IntegrityReport.passed` iff no violations; PAUSED_LIMIT run records `paused_at_state`; ≤ 3 diagnosis hypotheses.
+  - Test-ID sets are `frozenset[str]` that serialize as sorted lists (deterministic JSON).
 
 ## Task list
 

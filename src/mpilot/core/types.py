@@ -79,6 +79,21 @@ class Effort(StrEnum):
     MEDIUM = "medium"
 
 
+class RoutingPolicy(StrEnum):
+    """Model policy, config `routing.policy` (§8.4 Policies)."""
+
+    ROUTED = "routed"
+    ALL_OPUS = "all_opus"
+    ALL_SONNET = "all_sonnet"
+
+
+class EffortPolicy(StrEnum):
+    """Effort policy, config `routing.effort_policy` (§8.4 Policies)."""
+
+    ROUTED = "routed"
+    ALL_HIGH = "all_high"
+
+
 class Role(StrEnum):
     """Agent roles (§8.2) plus the two benchmark baselines that run as one role (§14.6)."""
 

@@ -138,7 +138,7 @@ def test_timeout_kills_the_whole_process_group() -> None:
     result = spawn.run(
         [SH, "-c", "sleep 60 & echo $!; wait"],
         env={},
-        timeout_s=0.5,
+        timeout_s=3,
     )
     assert result.timed_out
     assert result.returncode < 0
@@ -193,11 +193,11 @@ def test_timeout_is_bounded_even_if_a_grandchild_escapes_the_group() -> None:
     result = spawn.run(
         [SH, "-c", f"{setsid} sleep 30 & echo started; sleep 30"],
         env={},
-        timeout_s=0.5,
+        timeout_s=3,
     )
     elapsed = time.monotonic() - began
     assert result.timed_out
-    assert elapsed < 0.5 + spawn.KILL_GRACE_S + 2
+    assert elapsed < 3 + spawn.KILL_GRACE_S + 2
     assert b"started" in result.stdout
 
 

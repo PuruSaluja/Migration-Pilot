@@ -1,0 +1,3083 @@
+# serializer version: 1
+# name: test_json_schemas_snapshot
+  dict({
+    'Attempt': dict({
+      '$defs': dict({
+        'Diagnosis': dict({
+          'additionalProperties': False,
+          'properties': dict({
+            'category': dict({
+              '$ref': '#/$defs/FailureCategory',
+            }),
+            'changelog_refs': dict({
+              'items': dict({
+                'type': 'string',
+              }),
+              'title': 'Changelog Refs',
+              'type': 'array',
+            }),
+            'confidence': dict({
+              'maximum': 1,
+              'minimum': 0,
+              'title': 'Confidence',
+              'type': 'number',
+            }),
+            'evidence': dict({
+              'title': 'Evidence',
+              'type': 'string',
+            }),
+            'files': dict({
+              'items': dict({
+                'type': 'string',
+              }),
+              'title': 'Files',
+              'type': 'array',
+            }),
+            'hypotheses': dict({
+              'items': dict({
+                'type': 'string',
+              }),
+              'maxItems': 3,
+              'title': 'Hypotheses',
+              'type': 'array',
+            }),
+            'signature': dict({
+              'title': 'Signature',
+              'type': 'string',
+            }),
+          }),
+          'required': list([
+            'signature',
+            'category',
+            'evidence',
+            'confidence',
+          ]),
+          'title': 'Diagnosis',
+          'type': 'object',
+        }),
+        'FailedTest': dict({
+          'additionalProperties': False,
+          'properties': dict({
+            'message': dict({
+              'title': 'Message',
+              'type': 'string',
+            }),
+            'test_id': dict({
+              'title': 'Test Id',
+              'type': 'string',
+            }),
+            'trace_excerpt': dict({
+              'default': '',
+              'title': 'Trace Excerpt',
+              'type': 'string',
+            }),
+          }),
+          'required': list([
+            'test_id',
+            'message',
+          ]),
+          'title': 'FailedTest',
+          'type': 'object',
+        }),
+        'FailureCategory': dict({
+          'description': '''
+            Failure taxonomy (§14.5), shared by the Diagnoser and the eval.
+            
+            §14.5 writes two entries with a slash (`BASELINE_RED/FLAKY`, `NO_PROGRESS/OSCILLATION`).
+            Each is ONE category, named by its first token, which is also how §8.4 refers to it
+            (`NO_PROGRESS`).
+          ''',
+          'enum': list([
+            'ENV_INSTALL',
+            'ENV_TOOLCHAIN',
+            'ENV_NETWORK',
+            'BASELINE_RED',
+            'COMPILE_TYPE',
+            'API_REMOVED',
+            'API_BEHAVIOR_CHANGED',
+            'TEST_INFRA',
+            'CONFIG_FORMAT',
+            'TRANSITIVE_INCOMPAT',
+            'BUDGET_EXHAUSTED',
+            'NO_PROGRESS',
+            'INTEGRITY_BLOCKED',
+            'CRITIC_REJECTED',
+            'USAGE_LIMIT',
+            'AGENT_ERROR',
+            'CANCELLED',
+          ]),
+          'title': 'FailureCategory',
+          'type': 'string',
+        }),
+        'Outcome': dict({
+          'description': 'Attempt outcome (§7.4 attempt scoring, C1).',
+          'enum': list([
+            'improved',
+            'same',
+            'regressed',
+            'green',
+          ]),
+          'title': 'Outcome',
+          'type': 'string',
+        }),
+        'TestResult': dict({
+          'additionalProperties': False,
+          'description': 'Result of one test run. D9: carries the passed and failed test IDs, not just counts.',
+          'properties': dict({
+            'attempt_id': dict({
+              'anyOf': list([
+                dict({
+                  'type': 'string',
+                }),
+                dict({
+                  'type': 'null',
+                }),
+              ]),
+              'default': None,
+              'title': 'Attempt Id',
+            }),
+            'duration_s': dict({
+              'minimum': 0,
+              'title': 'Duration S',
+              'type': 'number',
+            }),
+            'errors': dict({
+              'minimum': 0,
+              'title': 'Errors',
+              'type': 'integer',
+            }),
+            'failed': dict({
+              'minimum': 0,
+              'title': 'Failed',
+              'type': 'integer',
+            }),
+            'failed_ids': dict({
+              'default': list([
+              ]),
+              'items': dict({
+                'type': 'string',
+              }),
+              'title': 'Failed Ids',
+              'type': 'array',
+              'uniqueItems': True,
+            }),
+            'failures': dict({
+              'items': dict({
+                '$ref': '#/$defs/FailedTest',
+              }),
+              'title': 'Failures',
+              'type': 'array',
+            }),
+            'junit_path': dict({
+              'anyOf': list([
+                dict({
+                  'type': 'string',
+                }),
+                dict({
+                  'type': 'null',
+                }),
+              ]),
+              'default': None,
+              'title': 'Junit Path',
+            }),
+            'passed': dict({
+              'minimum': 0,
+              'title': 'Passed',
+              'type': 'integer',
+            }),
+            'passed_ids': dict({
+              'default': list([
+              ]),
+              'items': dict({
+                'type': 'string',
+              }),
+              'title': 'Passed Ids',
+              'type': 'array',
+              'uniqueItems': True,
+            }),
+            'run_id': dict({
+              'title': 'Run Id',
+              'type': 'string',
+            }),
+            'skipped': dict({
+              'minimum': 0,
+              'title': 'Skipped',
+              'type': 'integer',
+            }),
+            'stage': dict({
+              '$ref': '#/$defs/TestStage',
+            }),
+          }),
+          'required': list([
+            'run_id',
+            'stage',
+            'passed',
+            'failed',
+            'skipped',
+            'errors',
+            'duration_s',
+          ]),
+          'title': 'TestResult',
+          'type': 'object',
+        }),
+        'TestStage': dict({
+          'description': 'Which test run a `TestResult` belongs to (§11.2, §9.5).',
+          'enum': list([
+            'baseline',
+            'targeted',
+            'full',
+            'final',
+          ]),
+          'title': 'TestStage',
+          'type': 'string',
+        }),
+        'VerifyResult': dict({
+          'additionalProperties': False,
+          'properties': dict({
+            'stages': dict({
+              'items': dict({
+                '$ref': '#/$defs/VerifyStageResult',
+              }),
+              'title': 'Stages',
+              'type': 'array',
+            }),
+            'tests': dict({
+              'anyOf': list([
+                dict({
+                  '$ref': '#/$defs/TestResult',
+                }),
+                dict({
+                  'type': 'null',
+                }),
+              ]),
+              'default': None,
+            }),
+          }),
+          'title': 'VerifyResult',
+          'type': 'object',
+        }),
+        'VerifyStage': dict({
+          'description': 'Verification stages in order (§7.4 attempt scoring: install < build < typecheck < tests).',
+          'enum': list([
+            'install',
+            'build',
+            'typecheck',
+            'tests',
+          ]),
+          'title': 'VerifyStage',
+          'type': 'string',
+        }),
+        'VerifyStageResult': dict({
+          'additionalProperties': False,
+          'properties': dict({
+            'duration_s': dict({
+              'default': 0.0,
+              'minimum': 0,
+              'title': 'Duration S',
+              'type': 'number',
+            }),
+            'exit_code': dict({
+              'anyOf': list([
+                dict({
+                  'type': 'integer',
+                }),
+                dict({
+                  'type': 'null',
+                }),
+              ]),
+              'default': None,
+              'title': 'Exit Code',
+            }),
+            'failure_signature': dict({
+              'anyOf': list([
+                dict({
+                  'type': 'string',
+                }),
+                dict({
+                  'type': 'null',
+                }),
+              ]),
+              'default': None,
+              'title': 'Failure Signature',
+            }),
+            'log_tail': dict({
+              'default': '',
+              'title': 'Log Tail',
+              'type': 'string',
+            }),
+            'passed': dict({
+              'title': 'Passed',
+              'type': 'boolean',
+            }),
+            'stage': dict({
+              '$ref': '#/$defs/VerifyStage',
+            }),
+          }),
+          'required': list([
+            'stage',
+            'passed',
+          ]),
+          'title': 'VerifyStageResult',
+          'type': 'object',
+        }),
+      }),
+      'additionalProperties': False,
+      'properties': dict({
+        'diagnosis': dict({
+          'anyOf': list([
+            dict({
+              '$ref': '#/$defs/Diagnosis',
+            }),
+            dict({
+              'type': 'null',
+            }),
+          ]),
+          'default': None,
+        }),
+        'diff_sha': dict({
+          'title': 'Diff Sha',
+          'type': 'string',
+        }),
+        'id': dict({
+          'title': 'Id',
+          'type': 'string',
+        }),
+        'n': dict({
+          'exclusiveMinimum': 0,
+          'title': 'N',
+          'type': 'integer',
+        }),
+        'outcome': dict({
+          '$ref': '#/$defs/Outcome',
+        }),
+        'run_id': dict({
+          'title': 'Run Id',
+          'type': 'string',
+        }),
+        'step_id': dict({
+          'title': 'Step Id',
+          'type': 'string',
+        }),
+        'verify': dict({
+          '$ref': '#/$defs/VerifyResult',
+        }),
+      }),
+      'required': list([
+        'id',
+        'run_id',
+        'step_id',
+        'n',
+        'diff_sha',
+        'verify',
+        'outcome',
+      ]),
+      'title': 'Attempt',
+      'type': 'object',
+    }),
+    'Baseline': dict({
+      '$defs': dict({
+        'FailedTest': dict({
+          'additionalProperties': False,
+          'properties': dict({
+            'message': dict({
+              'title': 'Message',
+              'type': 'string',
+            }),
+            'test_id': dict({
+              'title': 'Test Id',
+              'type': 'string',
+            }),
+            'trace_excerpt': dict({
+              'default': '',
+              'title': 'Trace Excerpt',
+              'type': 'string',
+            }),
+          }),
+          'required': list([
+            'test_id',
+            'message',
+          ]),
+          'title': 'FailedTest',
+          'type': 'object',
+        }),
+        'TestResult': dict({
+          'additionalProperties': False,
+          'description': 'Result of one test run. D9: carries the passed and failed test IDs, not just counts.',
+          'properties': dict({
+            'attempt_id': dict({
+              'anyOf': list([
+                dict({
+                  'type': 'string',
+                }),
+                dict({
+                  'type': 'null',
+                }),
+              ]),
+              'default': None,
+              'title': 'Attempt Id',
+            }),
+            'duration_s': dict({
+              'minimum': 0,
+              'title': 'Duration S',
+              'type': 'number',
+            }),
+            'errors': dict({
+              'minimum': 0,
+              'title': 'Errors',
+              'type': 'integer',
+            }),
+            'failed': dict({
+              'minimum': 0,
+              'title': 'Failed',
+              'type': 'integer',
+            }),
+            'failed_ids': dict({
+              'default': list([
+              ]),
+              'items': dict({
+                'type': 'string',
+              }),
+              'title': 'Failed Ids',
+              'type': 'array',
+              'uniqueItems': True,
+            }),
+            'failures': dict({
+              'items': dict({
+                '$ref': '#/$defs/FailedTest',
+              }),
+              'title': 'Failures',
+              'type': 'array',
+            }),
+            'junit_path': dict({
+              'anyOf': list([
+                dict({
+                  'type': 'string',
+                }),
+                dict({
+                  'type': 'null',
+                }),
+              ]),
+              'default': None,
+              'title': 'Junit Path',
+            }),
+            'passed': dict({
+              'minimum': 0,
+              'title': 'Passed',
+              'type': 'integer',
+            }),
+            'passed_ids': dict({
+              'default': list([
+              ]),
+              'items': dict({
+                'type': 'string',
+              }),
+              'title': 'Passed Ids',
+              'type': 'array',
+              'uniqueItems': True,
+            }),
+            'run_id': dict({
+              'title': 'Run Id',
+              'type': 'string',
+            }),
+            'skipped': dict({
+              'minimum': 0,
+              'title': 'Skipped',
+              'type': 'integer',
+            }),
+            'stage': dict({
+              '$ref': '#/$defs/TestStage',
+            }),
+          }),
+          'required': list([
+            'run_id',
+            'stage',
+            'passed',
+            'failed',
+            'skipped',
+            'errors',
+            'duration_s',
+          ]),
+          'title': 'TestResult',
+          'type': 'object',
+        }),
+        'TestStage': dict({
+          'description': 'Which test run a `TestResult` belongs to (§11.2, §9.5).',
+          'enum': list([
+            'baseline',
+            'targeted',
+            'full',
+            'final',
+          ]),
+          'title': 'TestStage',
+          'type': 'string',
+        }),
+      }),
+      'additionalProperties': False,
+      'properties': dict({
+        'coverage_pct': dict({
+          'anyOf': list([
+            dict({
+              'maximum': 100,
+              'minimum': 0,
+              'type': 'number',
+            }),
+            dict({
+              'type': 'null',
+            }),
+          ]),
+          'default': None,
+          'title': 'Coverage Pct',
+        }),
+        'flaky_ids': dict({
+          'items': dict({
+            'type': 'string',
+          }),
+          'title': 'Flaky Ids',
+          'type': 'array',
+          'uniqueItems': True,
+        }),
+        'passing_ids': dict({
+          'items': dict({
+            'type': 'string',
+          }),
+          'title': 'Passing Ids',
+          'type': 'array',
+          'uniqueItems': True,
+        }),
+        'run_id': dict({
+          'title': 'Run Id',
+          'type': 'string',
+        }),
+        'runs': dict({
+          'items': dict({
+            '$ref': '#/$defs/TestResult',
+          }),
+          'minItems': 1,
+          'title': 'Runs',
+          'type': 'array',
+        }),
+        'test_count': dict({
+          'minimum': 0,
+          'title': 'Test Count',
+          'type': 'integer',
+        }),
+        'test_file_hashes': dict({
+          'additionalProperties': dict({
+            'type': 'string',
+          }),
+          'title': 'Test File Hashes',
+          'type': 'object',
+        }),
+      }),
+      'required': list([
+        'run_id',
+        'runs',
+        'passing_ids',
+        'flaky_ids',
+        'test_file_hashes',
+        'test_count',
+      ]),
+      'title': 'Baseline',
+      'type': 'object',
+    }),
+    'Budgets': dict({
+      'additionalProperties': False,
+      'properties': dict({
+        'max_attempts_run': dict({
+          'exclusiveMinimum': 0,
+          'title': 'Max Attempts Run',
+          'type': 'integer',
+        }),
+        'max_attempts_step': dict({
+          'exclusiveMinimum': 0,
+          'title': 'Max Attempts Step',
+          'type': 'integer',
+        }),
+        'max_tokens': dict({
+          'exclusiveMinimum': 0,
+          'title': 'Max Tokens',
+          'type': 'integer',
+        }),
+        'max_turns': dict({
+          'exclusiveMinimum': 0,
+          'title': 'Max Turns',
+          'type': 'integer',
+        }),
+        'minutes_cap': dict({
+          'exclusiveMinimum': 0,
+          'title': 'Minutes Cap',
+          'type': 'integer',
+        }),
+      }),
+      'required': list([
+        'max_turns',
+        'max_tokens',
+        'minutes_cap',
+        'max_attempts_run',
+        'max_attempts_step',
+      ]),
+      'title': 'Budgets',
+      'type': 'object',
+    }),
+    'CriticVerdict': dict({
+      '$defs': dict({
+        'CriticDecision': dict({
+          'enum': list([
+            'approve',
+            'revise',
+            'escalate',
+          ]),
+          'title': 'CriticDecision',
+          'type': 'string',
+        }),
+      }),
+      'additionalProperties': False,
+      'properties': dict({
+        'decision': dict({
+          '$ref': '#/$defs/CriticDecision',
+        }),
+        'findings': dict({
+          'items': dict({
+            'type': 'string',
+          }),
+          'title': 'Findings',
+          'type': 'array',
+        }),
+        'hunk_mapping': dict({
+          'additionalProperties': dict({
+            'type': 'string',
+          }),
+          'title': 'Hunk Mapping',
+          'type': 'object',
+        }),
+        'run_id': dict({
+          'title': 'Run Id',
+          'type': 'string',
+        }),
+      }),
+      'required': list([
+        'run_id',
+        'decision',
+      ]),
+      'title': 'CriticVerdict',
+      'type': 'object',
+    }),
+    'Diagnosis': dict({
+      '$defs': dict({
+        'FailureCategory': dict({
+          'description': '''
+            Failure taxonomy (§14.5), shared by the Diagnoser and the eval.
+            
+            §14.5 writes two entries with a slash (`BASELINE_RED/FLAKY`, `NO_PROGRESS/OSCILLATION`).
+            Each is ONE category, named by its first token, which is also how §8.4 refers to it
+            (`NO_PROGRESS`).
+          ''',
+          'enum': list([
+            'ENV_INSTALL',
+            'ENV_TOOLCHAIN',
+            'ENV_NETWORK',
+            'BASELINE_RED',
+            'COMPILE_TYPE',
+            'API_REMOVED',
+            'API_BEHAVIOR_CHANGED',
+            'TEST_INFRA',
+            'CONFIG_FORMAT',
+            'TRANSITIVE_INCOMPAT',
+            'BUDGET_EXHAUSTED',
+            'NO_PROGRESS',
+            'INTEGRITY_BLOCKED',
+            'CRITIC_REJECTED',
+            'USAGE_LIMIT',
+            'AGENT_ERROR',
+            'CANCELLED',
+          ]),
+          'title': 'FailureCategory',
+          'type': 'string',
+        }),
+      }),
+      'additionalProperties': False,
+      'properties': dict({
+        'category': dict({
+          '$ref': '#/$defs/FailureCategory',
+        }),
+        'changelog_refs': dict({
+          'items': dict({
+            'type': 'string',
+          }),
+          'title': 'Changelog Refs',
+          'type': 'array',
+        }),
+        'confidence': dict({
+          'maximum': 1,
+          'minimum': 0,
+          'title': 'Confidence',
+          'type': 'number',
+        }),
+        'evidence': dict({
+          'title': 'Evidence',
+          'type': 'string',
+        }),
+        'files': dict({
+          'items': dict({
+            'type': 'string',
+          }),
+          'title': 'Files',
+          'type': 'array',
+        }),
+        'hypotheses': dict({
+          'items': dict({
+            'type': 'string',
+          }),
+          'maxItems': 3,
+          'title': 'Hypotheses',
+          'type': 'array',
+        }),
+        'signature': dict({
+          'title': 'Signature',
+          'type': 'string',
+        }),
+      }),
+      'required': list([
+        'signature',
+        'category',
+        'evidence',
+        'confidence',
+      ]),
+      'title': 'Diagnosis',
+      'type': 'object',
+    }),
+    'EnvProfile': dict({
+      '$defs': dict({
+        'Ecosystem': dict({
+          'enum': list([
+            'node',
+            'python',
+            'java',
+          ]),
+          'title': 'Ecosystem',
+          'type': 'string',
+        }),
+      }),
+      'additionalProperties': False,
+      'properties': dict({
+        'build_cmd': dict({
+          'anyOf': list([
+            dict({
+              'type': 'string',
+            }),
+            dict({
+              'type': 'null',
+            }),
+          ]),
+          'default': None,
+          'title': 'Build Cmd',
+        }),
+        'detection_sources': dict({
+          'additionalProperties': dict({
+            'type': 'string',
+          }),
+          'title': 'Detection Sources',
+          'type': 'object',
+        }),
+        'image_digest': dict({
+          'title': 'Image Digest',
+          'type': 'string',
+        }),
+        'install_cmd': dict({
+          'title': 'Install Cmd',
+          'type': 'string',
+        }),
+        'language': dict({
+          '$ref': '#/$defs/Ecosystem',
+        }),
+        'lockfile_hashes': dict({
+          'additionalProperties': dict({
+            'type': 'string',
+          }),
+          'title': 'Lockfile Hashes',
+          'type': 'object',
+        }),
+        'package_manager': dict({
+          'title': 'Package Manager',
+          'type': 'string',
+        }),
+        'runtime_version': dict({
+          'title': 'Runtime Version',
+          'type': 'string',
+        }),
+        'test_cmd': dict({
+          'title': 'Test Cmd',
+          'type': 'string',
+        }),
+        'typecheck_cmd': dict({
+          'anyOf': list([
+            dict({
+              'type': 'string',
+            }),
+            dict({
+              'type': 'null',
+            }),
+          ]),
+          'default': None,
+          'title': 'Typecheck Cmd',
+        }),
+      }),
+      'required': list([
+        'language',
+        'runtime_version',
+        'package_manager',
+        'install_cmd',
+        'test_cmd',
+        'image_digest',
+      ]),
+      'title': 'EnvProfile',
+      'type': 'object',
+    }),
+    'EvalResult': dict({
+      '$defs': dict({
+        'EffortPolicy': dict({
+          'description': 'Effort policy, config `routing.effort_policy` (§8.4 Policies).',
+          'enum': list([
+            'routed',
+            'all_high',
+          ]),
+          'title': 'EffortPolicy',
+          'type': 'string',
+        }),
+        'FailureCategory': dict({
+          'description': '''
+            Failure taxonomy (§14.5), shared by the Diagnoser and the eval.
+            
+            §14.5 writes two entries with a slash (`BASELINE_RED/FLAKY`, `NO_PROGRESS/OSCILLATION`).
+            Each is ONE category, named by its first token, which is also how §8.4 refers to it
+            (`NO_PROGRESS`).
+          ''',
+          'enum': list([
+            'ENV_INSTALL',
+            'ENV_TOOLCHAIN',
+            'ENV_NETWORK',
+            'BASELINE_RED',
+            'COMPILE_TYPE',
+            'API_REMOVED',
+            'API_BEHAVIOR_CHANGED',
+            'TEST_INFRA',
+            'CONFIG_FORMAT',
+            'TRANSITIVE_INCOMPAT',
+            'BUDGET_EXHAUSTED',
+            'NO_PROGRESS',
+            'INTEGRITY_BLOCKED',
+            'CRITIC_REJECTED',
+            'USAGE_LIMIT',
+            'AGENT_ERROR',
+            'CANCELLED',
+          ]),
+          'title': 'FailureCategory',
+          'type': 'string',
+        }),
+        'HumanReview': dict({
+          'additionalProperties': False,
+          'properties': dict({
+            'merge_ready': dict({
+              'title': 'Merge Ready',
+              'type': 'boolean',
+            }),
+            'reviewer': dict({
+              'title': 'Reviewer',
+              'type': 'string',
+            }),
+            'rubric': dict({
+              '$ref': '#/$defs/RubricScores',
+            }),
+          }),
+          'required': list([
+            'merge_ready',
+            'rubric',
+            'reviewer',
+          ]),
+          'title': 'HumanReview',
+          'type': 'object',
+        }),
+        'RoutingPolicy': dict({
+          'description': 'Model policy, config `routing.policy` (§8.4 Policies).',
+          'enum': list([
+            'routed',
+            'all_opus',
+            'all_sonnet',
+          ]),
+          'title': 'RoutingPolicy',
+          'type': 'string',
+        }),
+        'RubricScores': dict({
+          'additionalProperties': False,
+          'description': 'Blinded L4 review rubric (§14.3); each criterion scored 1 to 5.',
+          'properties': dict({
+            'correctness': dict({
+              'maximum': 5,
+              'minimum': 1,
+              'title': 'Correctness',
+              'type': 'integer',
+            }),
+            'explanation': dict({
+              'maximum': 5,
+              'minimum': 1,
+              'title': 'Explanation',
+              'type': 'integer',
+            }),
+            'idiomatic_use': dict({
+              'maximum': 5,
+              'minimum': 1,
+              'title': 'Idiomatic Use',
+              'type': 'integer',
+            }),
+            'minimality': dict({
+              'maximum': 5,
+              'minimum': 1,
+              'title': 'Minimality',
+              'type': 'integer',
+            }),
+          }),
+          'required': list([
+            'correctness',
+            'minimality',
+            'idiomatic_use',
+            'explanation',
+          ]),
+          'title': 'RubricScores',
+          'type': 'object',
+        }),
+        'RunStatus': dict({
+          'description': 'One member per §7.4 state, plus the terminal `END_*` states (C6 adds END_CANCELLED).',
+          'enum': list([
+            'INIT',
+            'CLONED',
+            'ENV_DETECTED',
+            'BASELINE_OK',
+            'ANALYZED',
+            'PLANNED',
+            'AWAITING_APPROVAL',
+            'BUMPED',
+            'CODEMODS_APPLIED',
+            'REPAIR_LOOP',
+            'INTEGRITY_CHECK',
+            'REVIEW',
+            'PR_OPENED',
+            'ESCALATED',
+            'PAUSED_LIMIT',
+            'END_SUCCESS',
+            'END_BASELINE_RED',
+            'END_REJECTED',
+            'END_BUDGET_EXCEEDED',
+            'END_ERROR',
+            'END_ESCALATED',
+            'END_CANCELLED',
+          ]),
+          'title': 'RunStatus',
+          'type': 'string',
+        }),
+        'SuccessLevel': dict({
+          'description': 'Benchmark success levels (§14.3); `NONE` means not even L0.',
+          'enum': list([
+            'none',
+            'L0',
+            'L1',
+            'L2',
+            'L3',
+            'L4',
+          ]),
+          'title': 'SuccessLevel',
+          'type': 'string',
+        }),
+      }),
+      'additionalProperties': False,
+      'properties': dict({
+        'api_equiv_usd': dict({
+          'minimum': 0,
+          'title': 'Api Equiv Usd',
+          'type': 'number',
+        }),
+        'attempts': dict({
+          'minimum': 0,
+          'title': 'Attempts',
+          'type': 'integer',
+        }),
+        'effort_policy': dict({
+          '$ref': '#/$defs/EffortPolicy',
+        }),
+        'failure_category': dict({
+          'anyOf': list([
+            dict({
+              '$ref': '#/$defs/FailureCategory',
+            }),
+            dict({
+              'type': 'null',
+            }),
+          ]),
+          'default': None,
+        }),
+        'human_review': dict({
+          'anyOf': list([
+            dict({
+              '$ref': '#/$defs/HumanReview',
+            }),
+            dict({
+              'type': 'null',
+            }),
+          ]),
+          'default': None,
+        }),
+        'integrity_violations_blocked': dict({
+          'default': 0,
+          'minimum': 0,
+          'title': 'Integrity Violations Blocked',
+          'type': 'integer',
+        }),
+        'llm_calls': dict({
+          'minimum': 0,
+          'title': 'Llm Calls',
+          'type': 'integer',
+        }),
+        'medium_effort_share': dict({
+          'maximum': 1,
+          'minimum': 0,
+          'title': 'Medium Effort Share',
+          'type': 'number',
+        }),
+        'opus_token_share': dict({
+          'maximum': 1,
+          'minimum': 0,
+          'title': 'Opus Token Share',
+          'type': 'number',
+        }),
+        'routing_policy': dict({
+          '$ref': '#/$defs/RoutingPolicy',
+        }),
+        'seed': dict({
+          'minimum': 0,
+          'title': 'Seed',
+          'type': 'integer',
+        }),
+        'status': dict({
+          '$ref': '#/$defs/RunStatus',
+        }),
+        'success_level': dict({
+          '$ref': '#/$defs/SuccessLevel',
+        }),
+        'suite': dict({
+          'title': 'Suite',
+          'type': 'string',
+        }),
+        'system': dict({
+          'title': 'System',
+          'type': 'string',
+        }),
+        'task_id': dict({
+          'title': 'Task Id',
+          'type': 'string',
+        }),
+        'tokens': dict({
+          'minimum': 0,
+          'title': 'Tokens',
+          'type': 'integer',
+        }),
+        'turns': dict({
+          'minimum': 0,
+          'title': 'Turns',
+          'type': 'integer',
+        }),
+        'wall_s': dict({
+          'minimum': 0,
+          'title': 'Wall S',
+          'type': 'number',
+        }),
+      }),
+      'required': list([
+        'suite',
+        'task_id',
+        'system',
+        'seed',
+        'status',
+        'success_level',
+        'turns',
+        'tokens',
+        'api_equiv_usd',
+        'wall_s',
+        'attempts',
+        'llm_calls',
+        'routing_policy',
+        'effort_policy',
+        'opus_token_share',
+        'medium_effort_share',
+      ]),
+      'title': 'EvalResult',
+      'type': 'object',
+    }),
+    'FailedTest': dict({
+      'additionalProperties': False,
+      'properties': dict({
+        'message': dict({
+          'title': 'Message',
+          'type': 'string',
+        }),
+        'test_id': dict({
+          'title': 'Test Id',
+          'type': 'string',
+        }),
+        'trace_excerpt': dict({
+          'default': '',
+          'title': 'Trace Excerpt',
+          'type': 'string',
+        }),
+      }),
+      'required': list([
+        'test_id',
+        'message',
+      ]),
+      'title': 'FailedTest',
+      'type': 'object',
+    }),
+    'HumanReview': dict({
+      '$defs': dict({
+        'RubricScores': dict({
+          'additionalProperties': False,
+          'description': 'Blinded L4 review rubric (§14.3); each criterion scored 1 to 5.',
+          'properties': dict({
+            'correctness': dict({
+              'maximum': 5,
+              'minimum': 1,
+              'title': 'Correctness',
+              'type': 'integer',
+            }),
+            'explanation': dict({
+              'maximum': 5,
+              'minimum': 1,
+              'title': 'Explanation',
+              'type': 'integer',
+            }),
+            'idiomatic_use': dict({
+              'maximum': 5,
+              'minimum': 1,
+              'title': 'Idiomatic Use',
+              'type': 'integer',
+            }),
+            'minimality': dict({
+              'maximum': 5,
+              'minimum': 1,
+              'title': 'Minimality',
+              'type': 'integer',
+            }),
+          }),
+          'required': list([
+            'correctness',
+            'minimality',
+            'idiomatic_use',
+            'explanation',
+          ]),
+          'title': 'RubricScores',
+          'type': 'object',
+        }),
+      }),
+      'additionalProperties': False,
+      'properties': dict({
+        'merge_ready': dict({
+          'title': 'Merge Ready',
+          'type': 'boolean',
+        }),
+        'reviewer': dict({
+          'title': 'Reviewer',
+          'type': 'string',
+        }),
+        'rubric': dict({
+          '$ref': '#/$defs/RubricScores',
+        }),
+      }),
+      'required': list([
+        'merge_ready',
+        'rubric',
+        'reviewer',
+      ]),
+      'title': 'HumanReview',
+      'type': 'object',
+    }),
+    'IntegrityReport': dict({
+      '$defs': dict({
+        'Violation': dict({
+          'additionalProperties': False,
+          'properties': dict({
+            'check_id': dict({
+              'title': 'Check Id',
+              'type': 'string',
+            }),
+            'code': dict({
+              'title': 'Code',
+              'type': 'string',
+            }),
+            'hunk': dict({
+              'anyOf': list([
+                dict({
+                  'type': 'string',
+                }),
+                dict({
+                  'type': 'null',
+                }),
+              ]),
+              'default': None,
+              'title': 'Hunk',
+            }),
+            'message': dict({
+              'title': 'Message',
+              'type': 'string',
+            }),
+            'path': dict({
+              'anyOf': list([
+                dict({
+                  'type': 'string',
+                }),
+                dict({
+                  'type': 'null',
+                }),
+              ]),
+              'default': None,
+              'title': 'Path',
+            }),
+          }),
+          'required': list([
+            'check_id',
+            'code',
+            'message',
+          ]),
+          'title': 'Violation',
+          'type': 'object',
+        }),
+      }),
+      'additionalProperties': False,
+      'properties': dict({
+        'coverage_delta_pp': dict({
+          'anyOf': list([
+            dict({
+              'type': 'number',
+            }),
+            dict({
+              'type': 'null',
+            }),
+          ]),
+          'default': None,
+          'title': 'Coverage Delta Pp',
+        }),
+        'passed': dict({
+          'title': 'Passed',
+          'type': 'boolean',
+        }),
+        'removed_api_usages_remaining': dict({
+          'items': dict({
+            'type': 'string',
+          }),
+          'title': 'Removed Api Usages Remaining',
+          'type': 'array',
+        }),
+        'resolved_versions': dict({
+          'additionalProperties': dict({
+            'type': 'string',
+          }),
+          'title': 'Resolved Versions',
+          'type': 'object',
+        }),
+        'run_id': dict({
+          'title': 'Run Id',
+          'type': 'string',
+        }),
+        'test_count_after': dict({
+          'minimum': 0,
+          'title': 'Test Count After',
+          'type': 'integer',
+        }),
+        'test_count_before': dict({
+          'minimum': 0,
+          'title': 'Test Count Before',
+          'type': 'integer',
+        }),
+        'violations': dict({
+          'items': dict({
+            '$ref': '#/$defs/Violation',
+          }),
+          'title': 'Violations',
+          'type': 'array',
+        }),
+      }),
+      'required': list([
+        'run_id',
+        'passed',
+        'test_count_before',
+        'test_count_after',
+      ]),
+      'title': 'IntegrityReport',
+      'type': 'object',
+    }),
+    'LLMCall': dict({
+      '$defs': dict({
+        'Effort': dict({
+          'description': 'Reasoning effort (§8.4). No other members, ever (NFR-12).',
+          'enum': list([
+            'high',
+            'medium',
+          ]),
+          'title': 'Effort',
+          'type': 'string',
+        }),
+        'Role': dict({
+          'description': 'Agent roles (§8.2) plus the two benchmark baselines that run as one role (§14.6).',
+          'enum': list([
+            'analyzer',
+            'planner',
+            'editor',
+            'diagnoser',
+            'critic',
+            'explorer',
+            'pr_writer',
+            'b2_single_shot',
+            'b3_generic',
+          ]),
+          'title': 'Role',
+          'type': 'string',
+        }),
+        'Tier': dict({
+          'description': 'Model tier (§8.4). No other members, ever: Haiku is never a tier (NFR-12).',
+          'enum': list([
+            'opus',
+            'sonnet',
+          ]),
+          'title': 'Tier',
+          'type': 'string',
+        }),
+      }),
+      'additionalProperties': False,
+      'properties': dict({
+        'api_equiv_usd': dict({
+          'default': 0.0,
+          'minimum': 0,
+          'title': 'Api Equiv Usd',
+          'type': 'number',
+        }),
+        'cache_read_tokens': dict({
+          'default': 0,
+          'minimum': 0,
+          'title': 'Cache Read Tokens',
+          'type': 'integer',
+        }),
+        'cache_write_tokens': dict({
+          'default': 0,
+          'minimum': 0,
+          'title': 'Cache Write Tokens',
+          'type': 'integer',
+        }),
+        'effort': dict({
+          '$ref': '#/$defs/Effort',
+        }),
+        'id': dict({
+          'title': 'Id',
+          'type': 'string',
+        }),
+        'input_tokens': dict({
+          'minimum': 0,
+          'title': 'Input Tokens',
+          'type': 'integer',
+        }),
+        'latency_ms': dict({
+          'minimum': 0,
+          'title': 'Latency Ms',
+          'type': 'integer',
+        }),
+        'limit_error': dict({
+          'anyOf': list([
+            dict({
+              'type': 'string',
+            }),
+            dict({
+              'type': 'null',
+            }),
+          ]),
+          'default': None,
+          'title': 'Limit Error',
+        }),
+        'model': dict({
+          'title': 'Model',
+          'type': 'string',
+        }),
+        'output_tokens': dict({
+          'minimum': 0,
+          'title': 'Output Tokens',
+          'type': 'integer',
+        }),
+        'role': dict({
+          '$ref': '#/$defs/Role',
+        }),
+        'routing_decision_id': dict({
+          'title': 'Routing Decision Id',
+          'type': 'string',
+        }),
+        'run_id': dict({
+          'title': 'Run Id',
+          'type': 'string',
+        }),
+        'runtime': dict({
+          'title': 'Runtime',
+          'type': 'string',
+        }),
+        'thinking': dict({
+          'title': 'Thinking',
+          'type': 'boolean',
+        }),
+        'tier': dict({
+          '$ref': '#/$defs/Tier',
+        }),
+      }),
+      'required': list([
+        'id',
+        'run_id',
+        'role',
+        'runtime',
+        'model',
+        'tier',
+        'effort',
+        'routing_decision_id',
+        'input_tokens',
+        'output_tokens',
+        'thinking',
+        'latency_ms',
+      ]),
+      'title': 'LLMCall',
+      'type': 'object',
+    }),
+    'MigrationSpec': dict({
+      '$defs': dict({
+        'Ecosystem': dict({
+          'enum': list([
+            'node',
+            'python',
+            'java',
+          ]),
+          'title': 'Ecosystem',
+          'type': 'string',
+        }),
+        'MigrationKind': dict({
+          'description': 'G3 migration kinds.',
+          'enum': list([
+            'bump',
+            'family_bump',
+            'replace',
+            'deprecation',
+          ]),
+          'title': 'MigrationKind',
+          'type': 'string',
+        }),
+        'PackageChange': dict({
+          'additionalProperties': False,
+          'properties': dict({
+            'from_range': dict({
+              'anyOf': list([
+                dict({
+                  'type': 'string',
+                }),
+                dict({
+                  'type': 'null',
+                }),
+              ]),
+              'default': None,
+              'title': 'From Range',
+            }),
+            'name': dict({
+              'minLength': 1,
+              'title': 'Name',
+              'type': 'string',
+            }),
+            'replaces': dict({
+              'anyOf': list([
+                dict({
+                  'type': 'string',
+                }),
+                dict({
+                  'type': 'null',
+                }),
+              ]),
+              'default': None,
+              'title': 'Replaces',
+            }),
+            'to_version': dict({
+              'minLength': 1,
+              'title': 'To Version',
+              'type': 'string',
+            }),
+          }),
+          'required': list([
+            'name',
+            'to_version',
+          ]),
+          'title': 'PackageChange',
+          'type': 'object',
+        }),
+      }),
+      'additionalProperties': False,
+      'properties': dict({
+        'assumptions': dict({
+          'items': dict({
+            'type': 'string',
+          }),
+          'title': 'Assumptions',
+          'type': 'array',
+        }),
+        'ecosystem': dict({
+          '$ref': '#/$defs/Ecosystem',
+        }),
+        'goal_text': dict({
+          'title': 'Goal Text',
+          'type': 'string',
+        }),
+        'kind': dict({
+          '$ref': '#/$defs/MigrationKind',
+        }),
+        'packages': dict({
+          'items': dict({
+            '$ref': '#/$defs/PackageChange',
+          }),
+          'minItems': 1,
+          'title': 'Packages',
+          'type': 'array',
+        }),
+      }),
+      'required': list([
+        'kind',
+        'ecosystem',
+        'packages',
+        'goal_text',
+      ]),
+      'title': 'MigrationSpec',
+      'type': 'object',
+    }),
+    'PackageChange': dict({
+      'additionalProperties': False,
+      'properties': dict({
+        'from_range': dict({
+          'anyOf': list([
+            dict({
+              'type': 'string',
+            }),
+            dict({
+              'type': 'null',
+            }),
+          ]),
+          'default': None,
+          'title': 'From Range',
+        }),
+        'name': dict({
+          'minLength': 1,
+          'title': 'Name',
+          'type': 'string',
+        }),
+        'replaces': dict({
+          'anyOf': list([
+            dict({
+              'type': 'string',
+            }),
+            dict({
+              'type': 'null',
+            }),
+          ]),
+          'default': None,
+          'title': 'Replaces',
+        }),
+        'to_version': dict({
+          'minLength': 1,
+          'title': 'To Version',
+          'type': 'string',
+        }),
+      }),
+      'required': list([
+        'name',
+        'to_version',
+      ]),
+      'title': 'PackageChange',
+      'type': 'object',
+    }),
+    'Plan': dict({
+      '$defs': dict({
+        'Step': dict({
+          'additionalProperties': False,
+          'properties': dict({
+            'attempts': dict({
+              'default': 0,
+              'minimum': 0,
+              'title': 'Attempts',
+              'type': 'integer',
+            }),
+            'changelog_refs': dict({
+              'items': dict({
+                'type': 'string',
+              }),
+              'title': 'Changelog Refs',
+              'type': 'array',
+            }),
+            'description': dict({
+              'title': 'Description',
+              'type': 'string',
+            }),
+            'id': dict({
+              'title': 'Id',
+              'type': 'string',
+            }),
+            'order': dict({
+              'minimum': 0,
+              'title': 'Order',
+              'type': 'integer',
+            }),
+            'rationale': dict({
+              'title': 'Rationale',
+              'type': 'string',
+            }),
+            'status': dict({
+              '$ref': '#/$defs/StepStatus',
+              'default': 'pending',
+            }),
+            'target_files': dict({
+              'items': dict({
+                'type': 'string',
+              }),
+              'title': 'Target Files',
+              'type': 'array',
+            }),
+            'type': dict({
+              '$ref': '#/$defs/StepType',
+            }),
+          }),
+          'required': list([
+            'id',
+            'order',
+            'type',
+            'description',
+            'rationale',
+          ]),
+          'title': 'Step',
+          'type': 'object',
+        }),
+        'StepStatus': dict({
+          'enum': list([
+            'pending',
+            'running',
+            'done',
+            'failed',
+            'skipped',
+          ]),
+          'title': 'StepStatus',
+          'type': 'string',
+        }),
+        'StepType': dict({
+          'description': 'Plan step types (FR-7).',
+          'enum': list([
+            'bump',
+            'codemod',
+            'edit_cluster',
+            'config',
+            'test_touch',
+            'verify',
+          ]),
+          'title': 'StepType',
+          'type': 'string',
+        }),
+      }),
+      'additionalProperties': False,
+      'properties': dict({
+        'approved': dict({
+          'anyOf': list([
+            dict({
+              'type': 'boolean',
+            }),
+            dict({
+              'type': 'null',
+            }),
+          ]),
+          'default': None,
+          'title': 'Approved',
+        }),
+        'changelog_refs': dict({
+          'items': dict({
+            'type': 'string',
+          }),
+          'title': 'Changelog Refs',
+          'type': 'array',
+        }),
+        'id': dict({
+          'title': 'Id',
+          'type': 'string',
+        }),
+        'risks': dict({
+          'items': dict({
+            'type': 'string',
+          }),
+          'title': 'Risks',
+          'type': 'array',
+        }),
+        'run_id': dict({
+          'title': 'Run Id',
+          'type': 'string',
+        }),
+        'steps': dict({
+          'items': dict({
+            '$ref': '#/$defs/Step',
+          }),
+          'title': 'Steps',
+          'type': 'array',
+        }),
+      }),
+      'required': list([
+        'id',
+        'run_id',
+        'steps',
+      ]),
+      'title': 'Plan',
+      'type': 'object',
+    }),
+    'PullRequest': dict({
+      'additionalProperties': False,
+      'properties': dict({
+        'branch': dict({
+          'title': 'Branch',
+          'type': 'string',
+        }),
+        'commits': dict({
+          'items': dict({
+            'type': 'string',
+          }),
+          'title': 'Commits',
+          'type': 'array',
+        }),
+        'created_at': dict({
+          'format': 'date-time',
+          'title': 'Created At',
+          'type': 'string',
+        }),
+        'draft': dict({
+          'title': 'Draft',
+          'type': 'boolean',
+        }),
+        'number': dict({
+          'exclusiveMinimum': 0,
+          'title': 'Number',
+          'type': 'integer',
+        }),
+        'run_id': dict({
+          'title': 'Run Id',
+          'type': 'string',
+        }),
+        'url': dict({
+          'title': 'Url',
+          'type': 'string',
+        }),
+      }),
+      'required': list([
+        'run_id',
+        'number',
+        'url',
+        'branch',
+        'draft',
+        'created_at',
+      ]),
+      'title': 'PullRequest',
+      'type': 'object',
+    }),
+    'RoutingDecision': dict({
+      '$defs': dict({
+        'Effort': dict({
+          'description': 'Reasoning effort (§8.4). No other members, ever (NFR-12).',
+          'enum': list([
+            'high',
+            'medium',
+          ]),
+          'title': 'Effort',
+          'type': 'string',
+        }),
+        'EffortPolicy': dict({
+          'description': 'Effort policy, config `routing.effort_policy` (§8.4 Policies).',
+          'enum': list([
+            'routed',
+            'all_high',
+          ]),
+          'title': 'EffortPolicy',
+          'type': 'string',
+        }),
+        'Role': dict({
+          'description': 'Agent roles (§8.2) plus the two benchmark baselines that run as one role (§14.6).',
+          'enum': list([
+            'analyzer',
+            'planner',
+            'editor',
+            'diagnoser',
+            'critic',
+            'explorer',
+            'pr_writer',
+            'b2_single_shot',
+            'b3_generic',
+          ]),
+          'title': 'Role',
+          'type': 'string',
+        }),
+        'RoutingPolicy': dict({
+          'description': 'Model policy, config `routing.policy` (§8.4 Policies).',
+          'enum': list([
+            'routed',
+            'all_opus',
+            'all_sonnet',
+          ]),
+          'title': 'RoutingPolicy',
+          'type': 'string',
+        }),
+        'Tier': dict({
+          'description': 'Model tier (§8.4). No other members, ever: Haiku is never a tier (NFR-12).',
+          'enum': list([
+            'opus',
+            'sonnet',
+          ]),
+          'title': 'Tier',
+          'type': 'string',
+        }),
+      }),
+      'additionalProperties': False,
+      'properties': dict({
+        'effort': dict({
+          '$ref': '#/$defs/Effort',
+        }),
+        'effort_escalated_from': dict({
+          'anyOf': list([
+            dict({
+              'const': 'medium',
+              'type': 'string',
+            }),
+            dict({
+              'type': 'null',
+            }),
+          ]),
+          'default': None,
+          'title': 'Effort Escalated From',
+        }),
+        'effort_policy': dict({
+          '$ref': '#/$defs/EffortPolicy',
+        }),
+        'escalated_from': dict({
+          'anyOf': list([
+            dict({
+              'const': 'sonnet',
+              'type': 'string',
+            }),
+            dict({
+              'type': 'null',
+            }),
+          ]),
+          'default': None,
+          'title': 'Escalated From',
+        }),
+        'id': dict({
+          'title': 'Id',
+          'type': 'string',
+        }),
+        'inputs_hash': dict({
+          'title': 'Inputs Hash',
+          'type': 'string',
+        }),
+        'policy': dict({
+          '$ref': '#/$defs/RoutingPolicy',
+        }),
+        'reason_codes': dict({
+          'items': dict({
+            'type': 'string',
+          }),
+          'title': 'Reason Codes',
+          'type': 'array',
+        }),
+        'role': dict({
+          '$ref': '#/$defs/Role',
+        }),
+        'run_id': dict({
+          'title': 'Run Id',
+          'type': 'string',
+        }),
+        'step_id': dict({
+          'anyOf': list([
+            dict({
+              'type': 'string',
+            }),
+            dict({
+              'type': 'null',
+            }),
+          ]),
+          'default': None,
+          'title': 'Step Id',
+        }),
+        'sticky': dict({
+          'default': False,
+          'title': 'Sticky',
+          'type': 'boolean',
+        }),
+        'tier': dict({
+          '$ref': '#/$defs/Tier',
+        }),
+      }),
+      'required': list([
+        'id',
+        'run_id',
+        'role',
+        'policy',
+        'effort_policy',
+        'tier',
+        'effort',
+        'inputs_hash',
+      ]),
+      'title': 'RoutingDecision',
+      'type': 'object',
+    }),
+    'RubricScores': dict({
+      'additionalProperties': False,
+      'description': 'Blinded L4 review rubric (§14.3); each criterion scored 1 to 5.',
+      'properties': dict({
+        'correctness': dict({
+          'maximum': 5,
+          'minimum': 1,
+          'title': 'Correctness',
+          'type': 'integer',
+        }),
+        'explanation': dict({
+          'maximum': 5,
+          'minimum': 1,
+          'title': 'Explanation',
+          'type': 'integer',
+        }),
+        'idiomatic_use': dict({
+          'maximum': 5,
+          'minimum': 1,
+          'title': 'Idiomatic Use',
+          'type': 'integer',
+        }),
+        'minimality': dict({
+          'maximum': 5,
+          'minimum': 1,
+          'title': 'Minimality',
+          'type': 'integer',
+        }),
+      }),
+      'required': list([
+        'correctness',
+        'minimality',
+        'idiomatic_use',
+        'explanation',
+      ]),
+      'title': 'RubricScores',
+      'type': 'object',
+    }),
+    'Run': dict({
+      '$defs': dict({
+        'Budgets': dict({
+          'additionalProperties': False,
+          'properties': dict({
+            'max_attempts_run': dict({
+              'exclusiveMinimum': 0,
+              'title': 'Max Attempts Run',
+              'type': 'integer',
+            }),
+            'max_attempts_step': dict({
+              'exclusiveMinimum': 0,
+              'title': 'Max Attempts Step',
+              'type': 'integer',
+            }),
+            'max_tokens': dict({
+              'exclusiveMinimum': 0,
+              'title': 'Max Tokens',
+              'type': 'integer',
+            }),
+            'max_turns': dict({
+              'exclusiveMinimum': 0,
+              'title': 'Max Turns',
+              'type': 'integer',
+            }),
+            'minutes_cap': dict({
+              'exclusiveMinimum': 0,
+              'title': 'Minutes Cap',
+              'type': 'integer',
+            }),
+          }),
+          'required': list([
+            'max_turns',
+            'max_tokens',
+            'minutes_cap',
+            'max_attempts_run',
+            'max_attempts_step',
+          ]),
+          'title': 'Budgets',
+          'type': 'object',
+        }),
+        'Ecosystem': dict({
+          'enum': list([
+            'node',
+            'python',
+            'java',
+          ]),
+          'title': 'Ecosystem',
+          'type': 'string',
+        }),
+        'EnvProfile': dict({
+          'additionalProperties': False,
+          'properties': dict({
+            'build_cmd': dict({
+              'anyOf': list([
+                dict({
+                  'type': 'string',
+                }),
+                dict({
+                  'type': 'null',
+                }),
+              ]),
+              'default': None,
+              'title': 'Build Cmd',
+            }),
+            'detection_sources': dict({
+              'additionalProperties': dict({
+                'type': 'string',
+              }),
+              'title': 'Detection Sources',
+              'type': 'object',
+            }),
+            'image_digest': dict({
+              'title': 'Image Digest',
+              'type': 'string',
+            }),
+            'install_cmd': dict({
+              'title': 'Install Cmd',
+              'type': 'string',
+            }),
+            'language': dict({
+              '$ref': '#/$defs/Ecosystem',
+            }),
+            'lockfile_hashes': dict({
+              'additionalProperties': dict({
+                'type': 'string',
+              }),
+              'title': 'Lockfile Hashes',
+              'type': 'object',
+            }),
+            'package_manager': dict({
+              'title': 'Package Manager',
+              'type': 'string',
+            }),
+            'runtime_version': dict({
+              'title': 'Runtime Version',
+              'type': 'string',
+            }),
+            'test_cmd': dict({
+              'title': 'Test Cmd',
+              'type': 'string',
+            }),
+            'typecheck_cmd': dict({
+              'anyOf': list([
+                dict({
+                  'type': 'string',
+                }),
+                dict({
+                  'type': 'null',
+                }),
+              ]),
+              'default': None,
+              'title': 'Typecheck Cmd',
+            }),
+          }),
+          'required': list([
+            'language',
+            'runtime_version',
+            'package_manager',
+            'install_cmd',
+            'test_cmd',
+            'image_digest',
+          ]),
+          'title': 'EnvProfile',
+          'type': 'object',
+        }),
+        'MigrationKind': dict({
+          'description': 'G3 migration kinds.',
+          'enum': list([
+            'bump',
+            'family_bump',
+            'replace',
+            'deprecation',
+          ]),
+          'title': 'MigrationKind',
+          'type': 'string',
+        }),
+        'MigrationSpec': dict({
+          'additionalProperties': False,
+          'properties': dict({
+            'assumptions': dict({
+              'items': dict({
+                'type': 'string',
+              }),
+              'title': 'Assumptions',
+              'type': 'array',
+            }),
+            'ecosystem': dict({
+              '$ref': '#/$defs/Ecosystem',
+            }),
+            'goal_text': dict({
+              'title': 'Goal Text',
+              'type': 'string',
+            }),
+            'kind': dict({
+              '$ref': '#/$defs/MigrationKind',
+            }),
+            'packages': dict({
+              'items': dict({
+                '$ref': '#/$defs/PackageChange',
+              }),
+              'minItems': 1,
+              'title': 'Packages',
+              'type': 'array',
+            }),
+          }),
+          'required': list([
+            'kind',
+            'ecosystem',
+            'packages',
+            'goal_text',
+          ]),
+          'title': 'MigrationSpec',
+          'type': 'object',
+        }),
+        'PackageChange': dict({
+          'additionalProperties': False,
+          'properties': dict({
+            'from_range': dict({
+              'anyOf': list([
+                dict({
+                  'type': 'string',
+                }),
+                dict({
+                  'type': 'null',
+                }),
+              ]),
+              'default': None,
+              'title': 'From Range',
+            }),
+            'name': dict({
+              'minLength': 1,
+              'title': 'Name',
+              'type': 'string',
+            }),
+            'replaces': dict({
+              'anyOf': list([
+                dict({
+                  'type': 'string',
+                }),
+                dict({
+                  'type': 'null',
+                }),
+              ]),
+              'default': None,
+              'title': 'Replaces',
+            }),
+            'to_version': dict({
+              'minLength': 1,
+              'title': 'To Version',
+              'type': 'string',
+            }),
+          }),
+          'required': list([
+            'name',
+            'to_version',
+          ]),
+          'title': 'PackageChange',
+          'type': 'object',
+        }),
+        'RunStatus': dict({
+          'description': 'One member per §7.4 state, plus the terminal `END_*` states (C6 adds END_CANCELLED).',
+          'enum': list([
+            'INIT',
+            'CLONED',
+            'ENV_DETECTED',
+            'BASELINE_OK',
+            'ANALYZED',
+            'PLANNED',
+            'AWAITING_APPROVAL',
+            'BUMPED',
+            'CODEMODS_APPLIED',
+            'REPAIR_LOOP',
+            'INTEGRITY_CHECK',
+            'REVIEW',
+            'PR_OPENED',
+            'ESCALATED',
+            'PAUSED_LIMIT',
+            'END_SUCCESS',
+            'END_BASELINE_RED',
+            'END_REJECTED',
+            'END_BUDGET_EXCEEDED',
+            'END_ERROR',
+            'END_ESCALATED',
+            'END_CANCELLED',
+          ]),
+          'title': 'RunStatus',
+          'type': 'string',
+        }),
+        'Spent': dict({
+          'additionalProperties': False,
+          'properties': dict({
+            'api_equiv_usd': dict({
+              'default': 0.0,
+              'minimum': 0,
+              'title': 'Api Equiv Usd',
+              'type': 'number',
+            }),
+            'cache_read_tokens': dict({
+              'default': 0,
+              'minimum': 0,
+              'title': 'Cache Read Tokens',
+              'type': 'integer',
+            }),
+            'cache_write_tokens': dict({
+              'default': 0,
+              'minimum': 0,
+              'title': 'Cache Write Tokens',
+              'type': 'integer',
+            }),
+            'input_tokens': dict({
+              'default': 0,
+              'minimum': 0,
+              'title': 'Input Tokens',
+              'type': 'integer',
+            }),
+            'output_tokens': dict({
+              'default': 0,
+              'minimum': 0,
+              'title': 'Output Tokens',
+              'type': 'integer',
+            }),
+            'sandbox_seconds': dict({
+              'default': 0.0,
+              'minimum': 0,
+              'title': 'Sandbox Seconds',
+              'type': 'number',
+            }),
+            'turns': dict({
+              'default': 0,
+              'minimum': 0,
+              'title': 'Turns',
+              'type': 'integer',
+            }),
+          }),
+          'title': 'Spent',
+          'type': 'object',
+        }),
+      }),
+      'additionalProperties': False,
+      'properties': dict({
+        'base_sha': dict({
+          'anyOf': list([
+            dict({
+              'type': 'string',
+            }),
+            dict({
+              'type': 'null',
+            }),
+          ]),
+          'default': None,
+          'title': 'Base Sha',
+        }),
+        'branch': dict({
+          'anyOf': list([
+            dict({
+              'type': 'string',
+            }),
+            dict({
+              'type': 'null',
+            }),
+          ]),
+          'default': None,
+          'title': 'Branch',
+        }),
+        'budgets': dict({
+          '$ref': '#/$defs/Budgets',
+        }),
+        'config_hash': dict({
+          'title': 'Config Hash',
+          'type': 'string',
+        }),
+        'created_at': dict({
+          'format': 'date-time',
+          'title': 'Created At',
+          'type': 'string',
+        }),
+        'env': dict({
+          'anyOf': list([
+            dict({
+              '$ref': '#/$defs/EnvProfile',
+            }),
+            dict({
+              'type': 'null',
+            }),
+          ]),
+          'default': None,
+        }),
+        'id': dict({
+          'title': 'Id',
+          'type': 'string',
+        }),
+        'paused_at_state': dict({
+          'anyOf': list([
+            dict({
+              '$ref': '#/$defs/RunStatus',
+            }),
+            dict({
+              'type': 'null',
+            }),
+          ]),
+          'default': None,
+        }),
+        'repo_url': dict({
+          'title': 'Repo Url',
+          'type': 'string',
+        }),
+        'spec': dict({
+          '$ref': '#/$defs/MigrationSpec',
+        }),
+        'spent': dict({
+          '$ref': '#/$defs/Spent',
+        }),
+        'status': dict({
+          '$ref': '#/$defs/RunStatus',
+        }),
+        'terminal_reason': dict({
+          'anyOf': list([
+            dict({
+              'type': 'string',
+            }),
+            dict({
+              'type': 'null',
+            }),
+          ]),
+          'default': None,
+          'title': 'Terminal Reason',
+        }),
+      }),
+      'required': list([
+        'id',
+        'created_at',
+        'status',
+        'repo_url',
+        'spec',
+        'budgets',
+        'config_hash',
+      ]),
+      'title': 'Run',
+      'type': 'object',
+    }),
+    'Spent': dict({
+      'additionalProperties': False,
+      'properties': dict({
+        'api_equiv_usd': dict({
+          'default': 0.0,
+          'minimum': 0,
+          'title': 'Api Equiv Usd',
+          'type': 'number',
+        }),
+        'cache_read_tokens': dict({
+          'default': 0,
+          'minimum': 0,
+          'title': 'Cache Read Tokens',
+          'type': 'integer',
+        }),
+        'cache_write_tokens': dict({
+          'default': 0,
+          'minimum': 0,
+          'title': 'Cache Write Tokens',
+          'type': 'integer',
+        }),
+        'input_tokens': dict({
+          'default': 0,
+          'minimum': 0,
+          'title': 'Input Tokens',
+          'type': 'integer',
+        }),
+        'output_tokens': dict({
+          'default': 0,
+          'minimum': 0,
+          'title': 'Output Tokens',
+          'type': 'integer',
+        }),
+        'sandbox_seconds': dict({
+          'default': 0.0,
+          'minimum': 0,
+          'title': 'Sandbox Seconds',
+          'type': 'number',
+        }),
+        'turns': dict({
+          'default': 0,
+          'minimum': 0,
+          'title': 'Turns',
+          'type': 'integer',
+        }),
+      }),
+      'title': 'Spent',
+      'type': 'object',
+    }),
+    'Step': dict({
+      '$defs': dict({
+        'StepStatus': dict({
+          'enum': list([
+            'pending',
+            'running',
+            'done',
+            'failed',
+            'skipped',
+          ]),
+          'title': 'StepStatus',
+          'type': 'string',
+        }),
+        'StepType': dict({
+          'description': 'Plan step types (FR-7).',
+          'enum': list([
+            'bump',
+            'codemod',
+            'edit_cluster',
+            'config',
+            'test_touch',
+            'verify',
+          ]),
+          'title': 'StepType',
+          'type': 'string',
+        }),
+      }),
+      'additionalProperties': False,
+      'properties': dict({
+        'attempts': dict({
+          'default': 0,
+          'minimum': 0,
+          'title': 'Attempts',
+          'type': 'integer',
+        }),
+        'changelog_refs': dict({
+          'items': dict({
+            'type': 'string',
+          }),
+          'title': 'Changelog Refs',
+          'type': 'array',
+        }),
+        'description': dict({
+          'title': 'Description',
+          'type': 'string',
+        }),
+        'id': dict({
+          'title': 'Id',
+          'type': 'string',
+        }),
+        'order': dict({
+          'minimum': 0,
+          'title': 'Order',
+          'type': 'integer',
+        }),
+        'rationale': dict({
+          'title': 'Rationale',
+          'type': 'string',
+        }),
+        'status': dict({
+          '$ref': '#/$defs/StepStatus',
+          'default': 'pending',
+        }),
+        'target_files': dict({
+          'items': dict({
+            'type': 'string',
+          }),
+          'title': 'Target Files',
+          'type': 'array',
+        }),
+        'type': dict({
+          '$ref': '#/$defs/StepType',
+        }),
+      }),
+      'required': list([
+        'id',
+        'order',
+        'type',
+        'description',
+        'rationale',
+      ]),
+      'title': 'Step',
+      'type': 'object',
+    }),
+    'TestResult': dict({
+      '$defs': dict({
+        'FailedTest': dict({
+          'additionalProperties': False,
+          'properties': dict({
+            'message': dict({
+              'title': 'Message',
+              'type': 'string',
+            }),
+            'test_id': dict({
+              'title': 'Test Id',
+              'type': 'string',
+            }),
+            'trace_excerpt': dict({
+              'default': '',
+              'title': 'Trace Excerpt',
+              'type': 'string',
+            }),
+          }),
+          'required': list([
+            'test_id',
+            'message',
+          ]),
+          'title': 'FailedTest',
+          'type': 'object',
+        }),
+        'TestStage': dict({
+          'description': 'Which test run a `TestResult` belongs to (§11.2, §9.5).',
+          'enum': list([
+            'baseline',
+            'targeted',
+            'full',
+            'final',
+          ]),
+          'title': 'TestStage',
+          'type': 'string',
+        }),
+      }),
+      'additionalProperties': False,
+      'description': 'Result of one test run. D9: carries the passed and failed test IDs, not just counts.',
+      'properties': dict({
+        'attempt_id': dict({
+          'anyOf': list([
+            dict({
+              'type': 'string',
+            }),
+            dict({
+              'type': 'null',
+            }),
+          ]),
+          'default': None,
+          'title': 'Attempt Id',
+        }),
+        'duration_s': dict({
+          'minimum': 0,
+          'title': 'Duration S',
+          'type': 'number',
+        }),
+        'errors': dict({
+          'minimum': 0,
+          'title': 'Errors',
+          'type': 'integer',
+        }),
+        'failed': dict({
+          'minimum': 0,
+          'title': 'Failed',
+          'type': 'integer',
+        }),
+        'failed_ids': dict({
+          'default': list([
+          ]),
+          'items': dict({
+            'type': 'string',
+          }),
+          'title': 'Failed Ids',
+          'type': 'array',
+          'uniqueItems': True,
+        }),
+        'failures': dict({
+          'items': dict({
+            '$ref': '#/$defs/FailedTest',
+          }),
+          'title': 'Failures',
+          'type': 'array',
+        }),
+        'junit_path': dict({
+          'anyOf': list([
+            dict({
+              'type': 'string',
+            }),
+            dict({
+              'type': 'null',
+            }),
+          ]),
+          'default': None,
+          'title': 'Junit Path',
+        }),
+        'passed': dict({
+          'minimum': 0,
+          'title': 'Passed',
+          'type': 'integer',
+        }),
+        'passed_ids': dict({
+          'default': list([
+          ]),
+          'items': dict({
+            'type': 'string',
+          }),
+          'title': 'Passed Ids',
+          'type': 'array',
+          'uniqueItems': True,
+        }),
+        'run_id': dict({
+          'title': 'Run Id',
+          'type': 'string',
+        }),
+        'skipped': dict({
+          'minimum': 0,
+          'title': 'Skipped',
+          'type': 'integer',
+        }),
+        'stage': dict({
+          '$ref': '#/$defs/TestStage',
+        }),
+      }),
+      'required': list([
+        'run_id',
+        'stage',
+        'passed',
+        'failed',
+        'skipped',
+        'errors',
+        'duration_s',
+      ]),
+      'title': 'TestResult',
+      'type': 'object',
+    }),
+    'ToolCall': dict({
+      '$defs': dict({
+        'PolicyDecision': dict({
+          'enum': list([
+            'allow',
+            'deny',
+          ]),
+          'title': 'PolicyDecision',
+          'type': 'string',
+        }),
+        'Role': dict({
+          'description': 'Agent roles (§8.2) plus the two benchmark baselines that run as one role (§14.6).',
+          'enum': list([
+            'analyzer',
+            'planner',
+            'editor',
+            'diagnoser',
+            'critic',
+            'explorer',
+            'pr_writer',
+            'b2_single_shot',
+            'b3_generic',
+          ]),
+          'title': 'Role',
+          'type': 'string',
+        }),
+      }),
+      'additionalProperties': False,
+      'properties': dict({
+        'attempt_id': dict({
+          'anyOf': list([
+            dict({
+              'type': 'string',
+            }),
+            dict({
+              'type': 'null',
+            }),
+          ]),
+          'default': None,
+          'title': 'Attempt Id',
+        }),
+        'deny_reason': dict({
+          'anyOf': list([
+            dict({
+              'type': 'string',
+            }),
+            dict({
+              'type': 'null',
+            }),
+          ]),
+          'default': None,
+          'title': 'Deny Reason',
+        }),
+        'duration_ms': dict({
+          'minimum': 0,
+          'title': 'Duration Ms',
+          'type': 'integer',
+        }),
+        'id': dict({
+          'title': 'Id',
+          'type': 'string',
+        }),
+        'input': dict({
+          'additionalProperties': True,
+          'title': 'Input',
+          'type': 'object',
+        }),
+        'output_summary': dict({
+          'title': 'Output Summary',
+          'type': 'string',
+        }),
+        'policy_decision': dict({
+          '$ref': '#/$defs/PolicyDecision',
+        }),
+        'role': dict({
+          '$ref': '#/$defs/Role',
+        }),
+        'run_id': dict({
+          'title': 'Run Id',
+          'type': 'string',
+        }),
+        'tool': dict({
+          'title': 'Tool',
+          'type': 'string',
+        }),
+      }),
+      'required': list([
+        'id',
+        'run_id',
+        'role',
+        'tool',
+        'input',
+        'output_summary',
+        'duration_ms',
+        'policy_decision',
+      ]),
+      'title': 'ToolCall',
+      'type': 'object',
+    }),
+    'VerifyResult': dict({
+      '$defs': dict({
+        'FailedTest': dict({
+          'additionalProperties': False,
+          'properties': dict({
+            'message': dict({
+              'title': 'Message',
+              'type': 'string',
+            }),
+            'test_id': dict({
+              'title': 'Test Id',
+              'type': 'string',
+            }),
+            'trace_excerpt': dict({
+              'default': '',
+              'title': 'Trace Excerpt',
+              'type': 'string',
+            }),
+          }),
+          'required': list([
+            'test_id',
+            'message',
+          ]),
+          'title': 'FailedTest',
+          'type': 'object',
+        }),
+        'TestResult': dict({
+          'additionalProperties': False,
+          'description': 'Result of one test run. D9: carries the passed and failed test IDs, not just counts.',
+          'properties': dict({
+            'attempt_id': dict({
+              'anyOf': list([
+                dict({
+                  'type': 'string',
+                }),
+                dict({
+                  'type': 'null',
+                }),
+              ]),
+              'default': None,
+              'title': 'Attempt Id',
+            }),
+            'duration_s': dict({
+              'minimum': 0,
+              'title': 'Duration S',
+              'type': 'number',
+            }),
+            'errors': dict({
+              'minimum': 0,
+              'title': 'Errors',
+              'type': 'integer',
+            }),
+            'failed': dict({
+              'minimum': 0,
+              'title': 'Failed',
+              'type': 'integer',
+            }),
+            'failed_ids': dict({
+              'default': list([
+              ]),
+              'items': dict({
+                'type': 'string',
+              }),
+              'title': 'Failed Ids',
+              'type': 'array',
+              'uniqueItems': True,
+            }),
+            'failures': dict({
+              'items': dict({
+                '$ref': '#/$defs/FailedTest',
+              }),
+              'title': 'Failures',
+              'type': 'array',
+            }),
+            'junit_path': dict({
+              'anyOf': list([
+                dict({
+                  'type': 'string',
+                }),
+                dict({
+                  'type': 'null',
+                }),
+              ]),
+              'default': None,
+              'title': 'Junit Path',
+            }),
+            'passed': dict({
+              'minimum': 0,
+              'title': 'Passed',
+              'type': 'integer',
+            }),
+            'passed_ids': dict({
+              'default': list([
+              ]),
+              'items': dict({
+                'type': 'string',
+              }),
+              'title': 'Passed Ids',
+              'type': 'array',
+              'uniqueItems': True,
+            }),
+            'run_id': dict({
+              'title': 'Run Id',
+              'type': 'string',
+            }),
+            'skipped': dict({
+              'minimum': 0,
+              'title': 'Skipped',
+              'type': 'integer',
+            }),
+            'stage': dict({
+              '$ref': '#/$defs/TestStage',
+            }),
+          }),
+          'required': list([
+            'run_id',
+            'stage',
+            'passed',
+            'failed',
+            'skipped',
+            'errors',
+            'duration_s',
+          ]),
+          'title': 'TestResult',
+          'type': 'object',
+        }),
+        'TestStage': dict({
+          'description': 'Which test run a `TestResult` belongs to (§11.2, §9.5).',
+          'enum': list([
+            'baseline',
+            'targeted',
+            'full',
+            'final',
+          ]),
+          'title': 'TestStage',
+          'type': 'string',
+        }),
+        'VerifyStage': dict({
+          'description': 'Verification stages in order (§7.4 attempt scoring: install < build < typecheck < tests).',
+          'enum': list([
+            'install',
+            'build',
+            'typecheck',
+            'tests',
+          ]),
+          'title': 'VerifyStage',
+          'type': 'string',
+        }),
+        'VerifyStageResult': dict({
+          'additionalProperties': False,
+          'properties': dict({
+            'duration_s': dict({
+              'default': 0.0,
+              'minimum': 0,
+              'title': 'Duration S',
+              'type': 'number',
+            }),
+            'exit_code': dict({
+              'anyOf': list([
+                dict({
+                  'type': 'integer',
+                }),
+                dict({
+                  'type': 'null',
+                }),
+              ]),
+              'default': None,
+              'title': 'Exit Code',
+            }),
+            'failure_signature': dict({
+              'anyOf': list([
+                dict({
+                  'type': 'string',
+                }),
+                dict({
+                  'type': 'null',
+                }),
+              ]),
+              'default': None,
+              'title': 'Failure Signature',
+            }),
+            'log_tail': dict({
+              'default': '',
+              'title': 'Log Tail',
+              'type': 'string',
+            }),
+            'passed': dict({
+              'title': 'Passed',
+              'type': 'boolean',
+            }),
+            'stage': dict({
+              '$ref': '#/$defs/VerifyStage',
+            }),
+          }),
+          'required': list([
+            'stage',
+            'passed',
+          ]),
+          'title': 'VerifyStageResult',
+          'type': 'object',
+        }),
+      }),
+      'additionalProperties': False,
+      'properties': dict({
+        'stages': dict({
+          'items': dict({
+            '$ref': '#/$defs/VerifyStageResult',
+          }),
+          'title': 'Stages',
+          'type': 'array',
+        }),
+        'tests': dict({
+          'anyOf': list([
+            dict({
+              '$ref': '#/$defs/TestResult',
+            }),
+            dict({
+              'type': 'null',
+            }),
+          ]),
+          'default': None,
+        }),
+      }),
+      'title': 'VerifyResult',
+      'type': 'object',
+    }),
+    'VerifyStageResult': dict({
+      '$defs': dict({
+        'VerifyStage': dict({
+          'description': 'Verification stages in order (§7.4 attempt scoring: install < build < typecheck < tests).',
+          'enum': list([
+            'install',
+            'build',
+            'typecheck',
+            'tests',
+          ]),
+          'title': 'VerifyStage',
+          'type': 'string',
+        }),
+      }),
+      'additionalProperties': False,
+      'properties': dict({
+        'duration_s': dict({
+          'default': 0.0,
+          'minimum': 0,
+          'title': 'Duration S',
+          'type': 'number',
+        }),
+        'exit_code': dict({
+          'anyOf': list([
+            dict({
+              'type': 'integer',
+            }),
+            dict({
+              'type': 'null',
+            }),
+          ]),
+          'default': None,
+          'title': 'Exit Code',
+        }),
+        'failure_signature': dict({
+          'anyOf': list([
+            dict({
+              'type': 'string',
+            }),
+            dict({
+              'type': 'null',
+            }),
+          ]),
+          'default': None,
+          'title': 'Failure Signature',
+        }),
+        'log_tail': dict({
+          'default': '',
+          'title': 'Log Tail',
+          'type': 'string',
+        }),
+        'passed': dict({
+          'title': 'Passed',
+          'type': 'boolean',
+        }),
+        'stage': dict({
+          '$ref': '#/$defs/VerifyStage',
+        }),
+      }),
+      'required': list([
+        'stage',
+        'passed',
+      ]),
+      'title': 'VerifyStageResult',
+      'type': 'object',
+    }),
+    'Violation': dict({
+      'additionalProperties': False,
+      'properties': dict({
+        'check_id': dict({
+          'title': 'Check Id',
+          'type': 'string',
+        }),
+        'code': dict({
+          'title': 'Code',
+          'type': 'string',
+        }),
+        'hunk': dict({
+          'anyOf': list([
+            dict({
+              'type': 'string',
+            }),
+            dict({
+              'type': 'null',
+            }),
+          ]),
+          'default': None,
+          'title': 'Hunk',
+        }),
+        'message': dict({
+          'title': 'Message',
+          'type': 'string',
+        }),
+        'path': dict({
+          'anyOf': list([
+            dict({
+              'type': 'string',
+            }),
+            dict({
+              'type': 'null',
+            }),
+          ]),
+          'default': None,
+          'title': 'Path',
+        }),
+      }),
+      'required': list([
+        'check_id',
+        'code',
+        'message',
+      ]),
+      'title': 'Violation',
+      'type': 'object',
+    }),
+  })
+# ---

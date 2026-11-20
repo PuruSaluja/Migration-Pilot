@@ -71,6 +71,7 @@ select = ["E", "F", "W", "I", "UP", "B", "SIM", "N", "RUF", "PT", "C4", "S", "T2
 python_version = "3.12"
 strict = true
 mypy_path = "src"
+plugins = ["pydantic.mypy"]
 packages = ["mpilot"]
 
 # ---------------------------------------------------------------- pytest
