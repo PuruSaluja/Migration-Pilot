@@ -157,7 +157,8 @@ class RoutingContext(BaseModel, frozen=True):        # no IDs (B9); validated sh
 
 class RoutingPolicies(BaseModel, frozen=True):       # all_opus => all_high; pins re-validated (P1-06)
     policy: RoutingPolicy; effort_policy: EffortPolicy; pins: Mapping[Role, RolePin]
-    # SPEC §8.4 "Pins": a pin replaces the default tier/effort only; triggers, effort
+    # SPEC §8.4 "Pins": a pin replaces the default tier/effort only (effort: high only, never
+    # medium); triggers, effort
     # escalation, stickiness and medium conditions always apply on top
 
 class RouteOutcome(BaseModel, frozen=True):          # B9: pure result, no IDs

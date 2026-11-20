@@ -6,6 +6,7 @@
 - Opus always runs at `high`. `medium` is only for the clearly mechanical Sonnet cases:
   a §8.4 trivial Sonnet edit by the Editor, the Explorer and the PR Writer. Never for the Planner,
   Critic, Diagnoser or Analyzer, never with Opus, never under `all_high`/`all_opus`.
+  Medium is chosen only by the router's §8.4 rules and can never be pinned.
 - The Planner and Critic are never routed down; B2 and B3 are always Opus/high whatever the
   config (B8), so they cannot be pinned.
 - No API key in v1 (Q9, NFR-11).
@@ -20,7 +21,7 @@ from collections.abc import Collection, Mapping
 
 from pydantic import BaseModel, ConfigDict
 
-from mpilot.core.types import Effort, EffortPolicy, Role, RoutingPolicy, Tier
+from mpilot.core.types import Effort, Role, RoutingPolicy, Tier
 
 ANTHROPIC_PREFIX = "ANTHROPIC_"
 
@@ -33,9 +34,9 @@ UNPINNABLE_ROLES = frozenset({Role.B2_SINGLE_SHOT, Role.B3_GENERIC})
 
 
 class RolePin(BaseModel):
-    """Pin a role's default tier and/or effort (SPEC §8.4 "Pins"). A pin replaces only the
-    default: escalation triggers, effort escalation, stickiness and the medium conditions
-    always apply on top, so a pin never lowers a choice those rules force."""
+    """Pin a role's default tier (opus or sonnet) and/or effort (high only; medium is never
+    pinned, SPEC §8.4 "Pins"). A pin replaces only the default: escalation triggers, effort
+    escalation and stickiness always apply on top, so a pin never lowers a choice they force."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -81,9 +82,8 @@ def anthropic_env_problems(env: Mapping[str, str], model_ids: Collection[str]) -
 def pin_problems(
     pins: Mapping[Role, RolePin],
     policy: RoutingPolicy,
-    effort_policy: EffortPolicy,
 ) -> list[str]:
-    """Problems with per-role pins. `effort_policy` is the one after `all_opus` normalization."""
+    """Problems with per-role pins (SPEC §8.4 "Pins")."""
     problems: list[str] = []
     if pins and policy is not RoutingPolicy.ROUTED:
         problems.append(f"routing.pins: pins need routing.policy = routed, not {policy.value}")
@@ -95,16 +95,12 @@ def pin_problems(
             problems.append(f"{where}: B2 and B3 always run Opus at high effort (B8)")
         if role in OPUS_FIXED_ROLES and pin.tier is Tier.SONNET:
             problems.append(f"{where}: the {role.value} is never routed down from Opus (§8.4)")
-        if pin.effort is not Effort.MEDIUM:
-            continue
-        if pin.tier is Tier.OPUS:
-            problems.append(f"{where}: medium effort can never be pinned onto Opus (NFR-12)")
-        if role in HIGH_ONLY_ROLES:
-            problems.append(f"{where}: the {role.value} always runs at high effort (NFR-12)")
-        if role is Role.EDITOR and pin.tier is not Tier.SONNET:
-            problems.append(f"{where}: medium for the editor also needs tier = sonnet")
-        if effort_policy is EffortPolicy.ALL_HIGH:
+        if pin.effort is Effort.MEDIUM:
+            # Medium is never pinned: it comes only from the §8.4 effort rules, so a medium pin
+            # could never change a result. This also covers every §8.2 rejection (medium on
+            # Opus or on the Planner, Critic, Diagnoser or Analyzer).
             problems.append(
-                f"{where}: medium conflicts with effort_policy = all_high (or all_opus)"
+                f"{where}: medium effort cannot be pinned; it is chosen only by the §8.4 "
+                "effort rules (NFR-12)"
             )
     return problems

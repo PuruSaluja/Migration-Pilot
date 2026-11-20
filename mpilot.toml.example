@@ -76,14 +76,14 @@ sonnet = "claude-sonnet-5-5"
 policy = "routed"           # routed | all_opus | all_sonnet (ablation only)
 effort_policy = "routed"    # routed | all_high
 
-# Optional per-role pins override the router for one role. NFR-12 rules, enforced on load:
-# medium effort only for the editor (with tier = "sonnet"), explorer and pr_writer; never with
-# Opus, never for planner/critic/diagnoser/analyzer; pins need policy = "routed". B2/B3 can't
-# be pinned. policy = "all_opus" forces effort_policy = "all_high" (the change is recorded).
+# Optional per-role pins set a role's default tier and/or effort (SPEC §8.4 "Pins"). Rules,
+# enforced on load: effort may only be pinned to "high" (medium comes only from the router's
+# §8.4 rules and can never be pinned); the planner and critic can't be pinned to sonnet; pins
+# need policy = "routed"; B2/B3 can't be pinned. Escalation triggers and stickiness still apply
+# on top of a pin. policy = "all_opus" forces effort_policy = "all_high" (recorded).
 #
 # [routing.pins.editor]
 # tier = "sonnet"
-# effort = "medium"
 
 [runtime]
 kind = "agent_sdk"          # the only runtime in v1

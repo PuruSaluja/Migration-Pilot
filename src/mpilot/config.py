@@ -193,7 +193,7 @@ class RoutingSettings(_Section):
 
     @model_validator(mode="after")
     def _nfr_12(self) -> RoutingSettings:
-        problems = pin_problems(self.pins, self.policy, self.effort_policy)
+        problems = pin_problems(self.pins, self.policy)
         if (
             self.effort_policy_normalized_from is not None
             and self.policy is not RoutingPolicy.ALL_OPUS

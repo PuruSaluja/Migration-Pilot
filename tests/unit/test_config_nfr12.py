@@ -155,7 +155,6 @@ def _oracle(
     effort_policy: EffortPolicy,
 ) -> bool:
     """Written from SPEC §8.2/§8.4/B8, independently of the implementation."""
-    effective = EffortPolicy.ALL_HIGH if policy is RoutingPolicy.ALL_OPUS else effort_policy
     if policy is not RoutingPolicy.ROUTED:
         return False  # pins only make sense under the routed policy
     if tier is None and effort is None:
@@ -164,14 +163,7 @@ def _oracle(
         return False
     if role in {Role.PLANNER, Role.CRITIC} and tier is Tier.SONNET:
         return False
-    if effort is Effort.MEDIUM:
-        return not (
-            tier is Tier.OPUS
-            or role in HIGH_ONLY
-            or (role is Role.EDITOR and tier is not Tier.SONNET)
-            or effective is EffortPolicy.ALL_HIGH
-        )
-    return True
+    return effort is not Effort.MEDIUM  # medium is never pinned (owner decision 2026-11-20)
 
 
 def _pin_config(
@@ -218,53 +210,38 @@ def test_every_role_tier_effort_policy_combination_matches_the_oracle() -> None:
     assert checked == len(ALL_ROLES) * 3 * 3 * 3 * 2
 
 
-def test_no_accepted_config_ever_pins_medium_onto_opus_or_a_high_only_role() -> None:
+def test_no_accepted_config_ever_pins_medium() -> None:
     """The invariant itself, checked over everything the loader accepts."""
     for role, tier, policy, effort_policy in itertools.product(
         ALL_ROLES, [None, Tier.OPUS, Tier.SONNET], list(RoutingPolicy), list(EffortPolicy)
     ):
-        try:
-            config = _pin_config(role, tier, Effort.MEDIUM, policy, effort_policy)
-        except ValueError:
-            continue
-        pin = config.routing.pins[role]
-        assert pin.tier is not Tier.OPUS
-        assert role in {Role.EDITOR, Role.EXPLORER, Role.PR_WRITER}  # Sonnet-only mechanical roles
-        assert role is not Role.EDITOR or pin.tier is Tier.SONNET
-        assert config.routing.effort_policy is EffortPolicy.ROUTED
+        with pytest.raises(ValueError, match="cannot be pinned"):
+            _pin_config(role, tier, Effort.MEDIUM, policy, effort_policy)
 
 
-@pytest.mark.parametrize("role", ["planner", "critic", "diagnoser", "analyzer"])
-def test_medium_on_the_high_only_roles_is_rejected(tmp_path: Path, role: str) -> None:
+@pytest.mark.parametrize(
+    "role", ["planner", "critic", "diagnoser", "analyzer", "editor", "explorer", "pr_writer"]
+)
+def test_medium_effort_cannot_be_pinned_for_any_role(tmp_path: Path, role: str) -> None:
     for tier_line in ("", 'tier = "sonnet"\n', 'tier = "opus"\n'):
-        with pytest.raises(ConfigError, match=r"always runs at high|never routed down|onto Opus"):
+        with pytest.raises(ConfigError, match="medium effort cannot be pinned"):
             _load_toml(tmp_path, f'[routing.pins.{role}]\n{tier_line}effort = "medium"\n')
 
 
-def test_medium_on_opus_is_rejected(tmp_path: Path) -> None:
-    with pytest.raises(ConfigError, match="onto Opus"):
-        _load_toml(tmp_path, '[routing.pins.editor]\ntier = "opus"\neffort = "medium"\n')
-
-
-def test_the_mechanical_sonnet_roles_may_be_pinned_to_medium(tmp_path: Path) -> None:
+def test_high_effort_and_tier_pins_are_still_accepted(tmp_path: Path) -> None:
     config = _load_toml(
         tmp_path,
         """
 [routing.pins.editor]
 tier = "sonnet"
-effort = "medium"
 [routing.pins.explorer]
-effort = "medium"
+effort = "high"
 [routing.pins.pr_writer]
-effort = "medium"
+tier = "opus"
+effort = "high"
 """,
     )
     assert set(config.routing.pins) == {Role.EDITOR, Role.EXPLORER, Role.PR_WRITER}
-
-
-def test_medium_editor_needs_an_explicit_sonnet_tier(tmp_path: Path) -> None:
-    with pytest.raises(ConfigError, match="also needs tier = sonnet"):
-        _load_toml(tmp_path, '[routing.pins.editor]\neffort = "medium"\n')
 
 
 def test_planner_and_critic_cannot_be_routed_down(tmp_path: Path) -> None:
@@ -288,13 +265,11 @@ def test_unknown_role_and_empty_pin_are_rejected(tmp_path: Path) -> None:
 
 def test_pins_from_the_environment_as_json() -> None:
     config = load_config(
-        environ={"MPILOT_ROUTING__PINS": '{"explorer": {"effort": "medium"}}'},
+        environ={"MPILOT_ROUTING__PINS": '{"explorer": {"effort": "high"}}'},
     )
-    assert config.routing.pins[Role.EXPLORER].effort is Effort.MEDIUM
-    with pytest.raises(ConfigError, match="onto Opus"):
-        load_config(
-            environ={"MPILOT_ROUTING__PINS": '{"editor": {"tier": "opus", "effort": "medium"}}'}
-        )
+    assert config.routing.pins[Role.EXPLORER].effort is Effort.HIGH
+    with pytest.raises(ConfigError, match="cannot be pinned"):
+        load_config(environ={"MPILOT_ROUTING__PINS": '{"explorer": {"effort": "medium"}}'})
     with pytest.raises(ConfigError, match="invalid JSON object"):
         load_config(environ={"MPILOT_ROUTING__PINS": "{oops"})
 
@@ -344,12 +319,16 @@ def test_a_normalized_config_round_trips() -> None:
     assert Config.model_validate_json(config.model_dump_json()) == config
 
 
-def test_medium_pins_conflict_with_all_opus_and_all_high(tmp_path: Path) -> None:
-    pin = '[routing.pins.explorer]\neffort = "medium"\n'
+def test_pins_are_rejected_under_all_opus_and_medium_under_all_high(tmp_path: Path) -> None:
     with pytest.raises(ConfigError, match=r"pins need routing\.policy = routed"):
-        _load_toml(tmp_path, '[routing]\npolicy = "all_opus"\n' + pin)
-    with pytest.raises(ConfigError, match="conflicts with effort_policy"):
-        _load_toml(tmp_path, '[routing]\neffort_policy = "all_high"\n' + pin)
+        _load_toml(
+            tmp_path, '[routing]\npolicy = "all_opus"\n[routing.pins.explorer]\neffort = "high"\n'
+        )
+    with pytest.raises(ConfigError, match="cannot be pinned"):
+        _load_toml(
+            tmp_path,
+            '[routing]\neffort_policy = "all_high"\n[routing.pins.explorer]\neffort = "medium"\n',
+        )
 
 
 def test_normalization_does_not_change_the_hash_between_spellings(tmp_path: Path) -> None:

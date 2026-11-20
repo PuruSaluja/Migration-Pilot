@@ -151,7 +151,7 @@ def policies(draw: st.DrawFn) -> RoutingPolicies:
                 tier=draw(st.none() | st.sampled_from(list(Tier))),
                 effort=draw(st.none() | st.sampled_from(list(Effort))),
             )
-            if not pin_problems({role: pin}, policy, effort):
+            if not pin_problems({role: pin}, policy):
                 pins[role] = pin
     return RoutingPolicies(policy=policy, effort_policy=effort, pins=pins)
 
@@ -565,10 +565,14 @@ def test_sonnet_pin_replaces_only_the_default_conditions() -> None:
     assert _problems(_ctx(), ROUTED, Tier.SONNET, Effort.HIGH) != []  # but not unpinned
 
 
-def test_medium_pin_still_needs_a_trivial_edit() -> None:
-    pol = RoutingPolicies(pins={Role.EDITOR: RolePin(tier=Tier.SONNET, effort=Effort.MEDIUM)})
-    assert any("trivial edit" in p for p in _problems(_ctx(), pol, Tier.SONNET, Effort.MEDIUM))
-    assert _problems(_ctx(**TRIVIAL), pol, Tier.SONNET, Effort.MEDIUM) == []
+@pytest.mark.parametrize("role", [Role.EDITOR, Role.EXPLORER, Role.PR_WRITER])
+def test_medium_can_never_be_pinned(role: Role) -> None:
+    """Owner decision (2026-11-20): medium comes only from the §8.4 rules, never from a pin."""
+    for tier in (None, Tier.SONNET):
+        with pytest.raises(ValidationError, match="cannot be pinned"):
+            RoutingPolicies(pins={role: RolePin(tier=tier, effort=Effort.MEDIUM)})
+    # An unpinned trivial Editor edit still gets medium, so nothing is lost.
+    assert _problems(_ctx(**TRIVIAL), ROUTED, Tier.SONNET, Effort.MEDIUM) == []
 
 
 # ---------------------------------------------------------------- the oracle, properties

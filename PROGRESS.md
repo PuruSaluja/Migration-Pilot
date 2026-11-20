@@ -64,7 +64,7 @@ Phase 1: Foundations
   - `GateInput` is a frozen dataclass bound to commits: `base_sha`, `mirror_commit`, `TreeReader`s for both, `WorkspaceDiff.target` + `target_digest`, and `step_diffs` that must chain in plan order. `evaluate_gate` has no default `required`, so it can never pass by running nothing.
   - `TestFileClassifier` has three independent predicates (`is_test_file`, `is_test_config`, `may_embed_test_config`).
   - `route_invariant_violations` encodes all of §8.4, not just the structure: triggers 1–8, Sonnet conditions, trivial-edit, pins, stickiness. Every escalation must be recorded in `new_sticky`. An Explorer call shares its step's sticky state, so its effort escalation also rules out Editor medium for the rest of the step (stricter than §8.4 requires).
-  - **Owner may want to flip:** SPEC §8.4 "Pins" (new, §20 row). A Sonnet tier pin waives the default "Sonnet allowed only when" conditions but never triggers; an Opus pin may lift the Explorer or PR Writer off Sonnet; a medium pin still needs every medium condition, so in practice it only applies to edits that would qualify for medium anyway.
+  - **Owner may want to flip:** SPEC §8.4 "Pins" (new, §20 row). A Sonnet tier pin waives the default "Sonnet allowed only when" conditions but never triggers; an Opus pin may lift the Explorer or PR Writer off Sonnet; **medium can never be pinned** (owner decision 2026-11-20: a medium pin could never change a result; config rejects it for every role, `pin_problems` no longer takes `effort_policy`).
   - `LockdownViolation` keeps the SPEC name (ruff N818 suppressed on that line).
 
 ## Task list

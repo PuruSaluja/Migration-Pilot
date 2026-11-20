@@ -181,7 +181,7 @@ class RoutingPolicies(_Frozen):
             and self.effort_policy is not EffortPolicy.ALL_HIGH
         ):
             raise ValueError("routing.policy = all_opus implies effort_policy = all_high")
-        problems = pin_problems(self.pins, self.policy, self.effort_policy)
+        problems = pin_problems(self.pins, self.policy)
         if problems:
             raise ValueError("; ".join(problems))
         return self
