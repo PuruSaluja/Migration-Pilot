@@ -1,1 +1,30 @@
+# Run artifacts (workspaces, mirrors, caches): the loopback filesystem mounts here
 runs/
+
+# Secrets and local config
+.env
+.env.*
+!.env.example
+mpilot.toml
+
+# Databases
+*.db
+*.db-wal
+*.db-shm
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+
+# Tool caches and reports
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.hypothesis/
+.coverage
+.coverage.*
+htmlcov/
