@@ -4,7 +4,7 @@
   in a model field or in the value of any `ANTHROPIC_*` setting.
 - Effort is `medium` or `high` (the `Effort` enum makes anything else unrepresentable).
 - Opus always runs at `high`. `medium` is only for the clearly mechanical Sonnet cases:
-  the Editor (pinned to Sonnet), the Explorer and the PR Writer. Never for the Planner,
+  a §8.4 trivial Sonnet edit by the Editor, the Explorer and the PR Writer. Never for the Planner,
   Critic, Diagnoser or Analyzer, never with Opus, never under `all_high`/`all_opus`.
 - The Planner and Critic are never routed down; B2 and B3 are always Opus/high whatever the
   config (B8), so they cannot be pinned.
@@ -33,7 +33,9 @@ UNPINNABLE_ROLES = frozenset({Role.B2_SINGLE_SHOT, Role.B3_GENERIC})
 
 
 class RolePin(BaseModel):
-    """Pin a role's tier and/or effort, overriding the router's choice for that role."""
+    """Pin a role's default tier and/or effort (SPEC §8.4 "Pins"). A pin replaces only the
+    default: escalation triggers, effort escalation, stickiness and the medium conditions
+    always apply on top, so a pin never lowers a choice those rules force."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 

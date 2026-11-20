@@ -361,8 +361,8 @@ Every call's model and effort are chosen by the Model Router (§8.4). **Only Opu
 | Editor | Smallest change for a step or diagnosis | edits + rationale + confidence | view/search/edit/create, explore, run_command (non-test) | Routed: Sonnet for mechanical edits, else Opus | Routed: medium only for trivial Sonnet edits, else high |
 | Diagnoser | Failures → ranked hypotheses | `Diagnosis[]` + confidence | read/search, explore, changelog_search, targeted run_tests | Routed: Sonnet for clear first failures, else Opus | high (fixed) |
 | Critic | Independent diff review | `CriticVerdict` | read-only, explore (locate only), fresh context | Opus (fixed) | high (fixed) |
-| Explorer | Read-only code search and summaries for other roles | cited summary | read/search only | Sonnet (fixed under `routed`) | Routed: medium by default, high when escalated or called by the Critic |
-| PR Writer | PR text from structured data | markdown | none | Sonnet (fixed under `routed`) | Routed: medium by default, high when escalated |
+| Explorer | Read-only code search and summaries for other roles | cited summary | read/search only | Sonnet (fixed under `routed`, unless pinned to Opus, §8.4 Pins) | Routed: medium by default, high when escalated or called by the Critic |
+| PR Writer | PR text from structured data | markdown | none | Sonnet (fixed under `routed`, unless pinned to Opus, §8.4 Pins) | Routed: medium by default, high when escalated |
 
 The config MUST reject:
 - any Haiku model ID
@@ -469,6 +469,7 @@ Haiku is never a tier. Opus never runs at medium. No effort level other than `me
   `all_opus` always implies `all_high`. B2 and B3 always use `all_opus` + `all_high`.
 
   Meanings: `all_opus` puts every role on Opus at high effort, including the Explorer and PR Writer. `all_sonnet` puts every role on Sonnet except the Planner and Critic, which are never routed down. Under `routed`, the Explorer and PR Writer stay on Sonnet even after escalation; only their effort moves to `high`.
+- **Pins** (config `routing.pins.<role>`, only under `routed`): a pin replaces that role's *default* tier and/or effort, and nothing else. A Sonnet tier pin waives that role's "Sonnet allowed only when" column; an Opus or high pin is always honoured. Escalation triggers 1–8, the effort-escalation rules, stickiness and the medium conditions above always apply on top, so no pin can lower a choice these rules force (a medium pin still needs every medium condition). A pin can put the Explorer or PR Writer on Opus; the §8.2 rejections (no medium on Opus or on the Planner, Critic, Diagnoser or Analyzer; Planner and Critic never Sonnet; B2/B3 never pinned) still hold.
 - **Purity:** `route()` returns tier, effort, reason codes and the new sticky state, with no IDs. The orchestrator wraps the result into a `RoutingDecision` and persists the sticky state with each checkpoint. Stickiness is scoped to a step; calls outside any step (Analyzer, Planner, PR Writer) are scoped to their run phase.
 - **Pre-registered quality guards (Phase 9, on the 15-task ablation subset):**
   - **Model guard:** `routed` is compared with `all_opus`. If `routed` reaches L2 on 2 or more fewer tasks than `all_opus`, the model default becomes `all_opus`, because best performance is the metric. Routing is then reported as an optional usage saver.
@@ -479,7 +480,7 @@ Haiku is never a tier. Opus never runs at medium. No effort level other than `me
 ### 8.5 Explorer subagent [REC]
 
 Opus roles (Planner, Diagnoser, Editor, Critic) can call `explore(question, scope?)`.
-- The orchestrator runs the **Explorer** role in a fresh context: Sonnet 5.5, read-only tools only, ≤ 20 tool calls. It runs at medium effort by default and at high when the §8.4 effort rules say so (always high for the Critic).
+- The orchestrator runs the **Explorer** role in a fresh context: Sonnet 5.5 (unless pinned to Opus, §8.4 Pins), read-only tools only, ≤ 20 tool calls. It runs at medium effort by default and at high when the §8.4 effort rules say so (always high for the Critic).
 - It returns a ≤ 1,500-token answer with `path:line` citations.
 
 **Why:**
@@ -1243,6 +1244,7 @@ Quality is the metric, not speed. With roughly two-thirds of tasks on Sonnet, ex
 | 2026-11-19 | v1.4 (second review): budget clamp and budget endings; NFR-10 makes Linux the v1 host, macOS best-effort; `route(ctx, policy) -> RouteOutcome`; Explorer/PR Writer fixed under `routed`; Phase 4 minimal gate adds (a), (g) and no test-file changes, tagged OPUS; redaction covers model inputs from Phase 4; `CANCELLED` category | Consistency fixes from the second review |
 | 2026-11-19 | v1.4 (third review): phase snapshot refs and phase commits from consecutive snapshots; tracked files never excluded; every workspace-mounting container frozen; metadata-only disk polling; redaction covers model inputs (§9.3); (a) counts missing tests as failing and cross-checks JUnit; push only the verified commit; baselines judged the same way | Consistency fixes from the third review |
 | 2026-11-19 | v1.4: detail rules: Administration never requested (§11.6); seeds are repeat indices (NFR-5); cassettes at the runtime boundary; Typer, githubkit, hypothesis, respx, SQLite FTS5 (§15); Docker tests fail rather than skip (§18 rule 8); API binds to 127.0.0.1; escalate-immediately detection (§7.4); repo size check (FR-2); Explorer 20-call cutoff (FR-23); B2 inputs and B3 turn cap (§14.6) | Approved P0 proposals, logged for completeness |
+| 2026-11-20 | v1.4 (P1-07): routing pins defined (§8.4 "Pins"): a pin sets a role's default tier/effort only (a Sonnet pin waives the default Sonnet conditions; an Opus pin may lift the Explorer or PR Writer off Sonnet); triggers, effort escalation, stickiness and medium conditions always apply on top; "a trigger fired in this scope" is part of the sticky state, and every escalation is recorded in it | Pins existed in config since P1-06 without spec semantics; a pin must never weaken trigger 7 (`test_touch`) or any other quality rule (P1-07 review) |
 
 ---
 

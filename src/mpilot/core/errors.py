@@ -25,3 +25,16 @@ class ForbiddenModelError(MpilotError):
 
 class BudgetExceededError(MpilotError):
     """A turn, token or time cap was crossed (NFR-1, H7)."""
+
+
+class LockdownViolation(MpilotError):  # noqa: N818  (the name SPEC §8.1/architecture use)
+    """The agent runtime is not locked down as §8.1 items 1-10 require (H9).
+
+    Raised by the static check at every runtime start, and when a call ran without extended
+    thinking (§8.1 item 10). Never caught to carry on: the run ends in END_ERROR.
+    """
+
+
+class RuntimeCallError(MpilotError):
+    """A role call failed for a reason other than a usage limit, a forbidden model or the
+    lockdown: transport failure, a result that contradicts its request, and so on."""

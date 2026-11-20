@@ -1,7 +1,7 @@
 # Architecture
 
-Status: **DRAFT interface signatures from P0-1.**
-P1-07 and P1-08 turn these into real Python Protocols with docstrings, and P1-12 freezes them once `spec-reviewer` approves.
+Status: §4–§6 and §8 are **real code since P1-07** (signatures below are summaries; the docstrings in the named modules are authoritative). The rest are **DRAFT signatures from P0-1** until P1-08.
+P1-12 freezes them once `spec-reviewer` approves.
 After the freeze, changing an interface is a spec change (SPEC §18 rule 5).
 The signatures assume the proposals in `docs/decisions.md`, referenced below as A1, B2 and so on.
 
@@ -25,14 +25,17 @@ Data paths:
 ```
 src/mpilot/
   core/        types.py (enums, ids), clock.py, errors.py, tokens.py (B3 estimator), spawn.py (A10)
-  models/      domain.py (Pydantic, §12), tables.py (SQLAlchemy), store.py (RunStore impl)
+  models/      domain.py (Pydantic, §12), artifacts.py (trees, diffs, FinalVerification, ApiPattern),
+               tables.py (SQLAlchemy), store.py (RunStore impl)
   config.py    settings + NFR-12 validation + config_hash
   orchestrator/ states.py (pure transition table), machine.py, budget.py, checkpoint.py, loop.py
   agents/      runtime.py, sdk_runtime.py, messages_runtime.py, fake_runtime.py, cassette.py,
                router.py, roles/<role>.py, prompts/<role>.md, schemas.py
   tools/       base.py (Tool, ToolHost), files.py, search.py, exec.py, knowledge.py, mcp_server.py
-  policy/      hooks.py (tool policies), integrity.py, diff_limits.py, secrets.py, licenses.py,
+  policy/      hooks.py (tool policies), gate.py (GateInput, PolicyCheck, evaluate_gate),
+               integrity.py, diff_limits.py, secrets.py, licenses.py,
                allowed_files.py, branch.py, test_files.py (D2 classifier)
+  testing/     policy.py (E1 marker plugin), doubles.py (minimal Protocol doubles, mypy-checked)
   sandbox/     driver.py (Docker), workspace.py (host-side safe FS, A1), network.py, proxy/, e2b.py
   detect/  verify/  knowledge/  codemods/registry.yaml  vcs/  telemetry/  api/  web/
 ```
@@ -70,128 +73,182 @@ Domain models are the §12 classes, one Pydantic v2 model each, with IDs as `New
 ## 4. Agent runtime (`agents/runtime.py`)
 
 ```python
-class ModelChoice(BaseModel, frozen=True):
-    tier: Tier; effort: Effort; model_id: str          # model_id resolved from validated config
+class ModelChoice(BaseModel, frozen=True):           # rejects Haiku, Opus+medium, tier/model mismatch
+    tier: Tier; effort: Effort; model_id: str
 
-class RoleCallRequest(BaseModel, frozen=True):
-    run_id: RunId; step_id: StepId | None; role: Role
-    choice: ModelChoice; routing_decision_id: str
-    system_prompt: str                 # stable prefix: rules, H6, tool docs, repo map (SPEC §10.3)
-    user_prompt: str                   # untrusted content already wrapped in <untrusted_repo_content>
-    tool_allowlist: frozenset[str]     # bare tool names; runtime exposes them as mcp__mpilot__<name>
-    output_schema: dict[str, Any]      # JSON schema; must include `confidence: number[0,1]`
-    max_turns: int                     # already clamped by BudgetManager (B2)
-    max_tool_calls: int                # §8.3 Editor ≤ 15, §8.5 Explorer ≤ 20; enforced in ToolHost
-    budget_guard: BudgetGuard          # checked before every tool call; can end the call (B2)
+class RoleCallRequest(BaseModel, frozen=True):       # serializable: cassettes key on request_hash() (B6)
+    context: ToolContext                             # run, step, role, caller, role_call_id, max_tool_calls (§6)
+    choice: ModelChoice; routing_decision_id: RoutingDecisionId
+    system_prompt: str                               # stable prefix: rules, H6, tool docs, repo map (§10.3)
+    user_prompt: str                                 # untrusted content already in <untrusted_repo_content>
+    tool_allowlist: frozenset[str]                   # bare registry names; exposed as mcp__mpilot__<name>
+    output_schema: dict[str, Any]                    # must require `confidence: number [0, 1]` (validated)
+    max_turns: PositiveInt                           # already clamped by the BudgetManager (B2)
+    call_id -> LLMCallId; role -> Role
+    def request_hash(self) -> str: ...               # content only: random run/call/step/attempt/
+                                                     # routing IDs excluded, so a replay matches (B6)
+
+class StopReason(StrEnum): COMPLETED; SCHEMA_INVALID; MAX_TURNS; BUDGET_STOP; TOOL_CALL_CAP
+    # usage/rate limit raises UsageLimitError instead; cancellation is asyncio.CancelledError
 
 class RoleCallResult(BaseModel, frozen=True):
-    output: dict[str, Any] | None      # schema-validated, or None if invalid
-    schema_valid: bool
-    usage: Usage; turns: int; latency_ms: int
-    tool_call_ids: list[str]
-    models_seen: frozenset[str]        # every model the runtime reports using (A4 guard)
-    stop: Literal["completed", "max_turns", "schema_invalid", "budget_stop", "interrupted"]
-    thinking_enabled: bool             # §8.3: must be True; the orchestrator rejects False
+    call_id: LLMCallId; stop: StopReason
+    output: dict[str, Any] | None                    # present exactly when stop == COMPLETED
+    model_id: str; effort_applied: Effort            # what actually ran, never just what was asked
+    models_seen: frozenset[str]                      # A4 guard; Haiku unrepresentable
+    thinking_enabled: bool; usage: Usage; turns: int; latency_ms: int
+    tool_call_ids: tuple[ToolCallId, ...]            # every invoke, allowed and denied; <= max_tool_calls + 1
+
+def check_result(req: RoleCallRequest, res: RoleCallResult) -> None:
+    """Orchestrator-side second line: ForbiddenModelError (other model), LockdownViolation
+    (thinking off), RuntimeCallError (call id, effort, turns, or more than max_tool_calls + 1
+    invocations: the cap refusal itself is normal, a call after it is a runtime bug)."""
 
 class RuntimeCapabilities(BaseModel, frozen=True):
-    per_call_effort: bool; prompt_caching: bool; context_editing: bool   # B1
+    per_call_effort: bool; default_effort_verified_high: bool       # B1 fallback needs both
+    prompt_caching: bool; context_editing: bool                     # verified in P4-01
+class SelftestCheck(BaseModel, frozen=True): name: str; passed: bool; detail: str
+class SelftestReport(BaseModel, frozen=True): runtime: str; checks: tuple[SelftestCheck, ...]; passed -> bool
+
+class BudgetGuard(Protocol):                         # from BudgetManager.guard() (P1-08, P4-16)
+    def after_turn(self, usage: Usage | None) -> None: ...   # None = runtime can't report per turn
+    def before_tool_call(self) -> None: ...                  # both raise BudgetExceededError
 
 class AgentRuntime(Protocol):
-    name: str
-    capabilities: RuntimeCapabilities
-    async def call(self, req: RoleCallRequest, tools: ToolHost) -> RoleCallResult:
-        """Run one role call with extended thinking on, model and max_turns from req.
-        Records usage incl. cache read/write. Maps SDK usage-limit and rate-limit errors to
-        UsageLimitError (FR-21). Raises ForbiddenModelError (A4), LockdownViolation (H9),
-        RuntimeCallError."""
-    def check_lockdown_static(self) -> None:
-        """Run at every start: validate SDK options and env against A5. Raises LockdownViolation."""
-    async def selftest(self) -> SelftestReport:
-        """Prove the §8.1 lockdown: built-in tools refused, no settings loaded, clean env."""
+    name: str; capabilities: RuntimeCapabilities     # read-only properties
+    def check_lockdown_static(self) -> None: ...     # §8.1 items 1-10 at every start; LockdownViolation
+    async def call(self, req: RoleCallRequest, tools: ToolHost, guard: BudgetGuard) -> RoleCallResult:
+        """Thinking always on; exposes only req.tool_allowlist; per tool call:
+        guard.before_tool_call() -> tools.invoke(name_as_sent, args, req.context) -> for_model();
+        after a TOOL_CALL_CAP refusal the next tool call ends the call (TOOL_CALL_CAP);
+        per turn: guard.after_turn(). Raises UsageLimitError, ForbiddenModelError,
+        LockdownViolation, RuntimeCallError."""
+    async def selftest(self) -> SelftestReport: ...
 ```
 
 Implementations: `AgentSDKRuntime` (default), `MessagesRuntime` (optional), `FakeRuntime` (scripted), `CassetteRuntime` (replay, B6).
+Test double: `testing.doubles.EchoRuntime`.
 
 ## 5. Model Router (`agents/router.py`)
 
 ```python
 class StickyState(BaseModel, frozen=True):
-    tier_escalated: bool = False; effort_escalated: bool = False        # per step; never reset mid-step
+    tier_escalated: bool = False; effort_escalated: bool = False
+    trigger_fired: bool = False                      # any trigger 1-8 in scope => no medium afterwards
+    def covers(self, other: StickyState) -> bool: ...   # no de-escalation; any -> bool
 
-class RoutingContext(BaseModel, frozen=True):
-    role: Role; caller: Role | None                 # caller set for Explorer calls (Critic ⇒ high)
-    step_type: StepType | None; touches_test_config: bool
-    migration_kind: MigrationKind; usage_sites: int | None
-    attempt_in_step: int; attempts_on_signature: int
+class ExplorerFlag(StrEnum): NO_CITATIONS; OVER_CAP; REPEATED_QUESTION
+
+class RoutingContext(BaseModel, frozen=True):        # no IDs (B9); validated shape
+    role: Role; caller: Role | None                  # set exactly for Explorer calls; one of
+                                                     # EXPLORE_CALLER_ROLES (Analyzer, Planner, Editor, Diagnoser, Critic)
+    step_type: StepType | None; touches_test_config: bool    # Editor/Diagnoser always in a step;
+    migration_kind: MigrationKind; usage_sites: int | None   # Analyzer/Planner/PR Writer never
+    attempt_in_step: int; attempts_on_signature: int         # 1-based; 0 = not in a step / none
     prev_outcome: Outcome | None; failure_category: FailureCategory | None
-    expected_files: int | None; expected_lines: int | None
-    has_changelog_mapping: bool          # Editor: explicit before/after mapping exists
-    error_maps_to_changelog: bool        # Diagnoser: the error maps to a changelog entry (B9)
-    is_codemod_followup: bool
-    last_confidence: float | None; diagnosis_confidence: float | None
+    expected_files: int | None; expected_lines: int | None   # None = unknown, never "small"
+    has_changelog_mapping: bool; error_maps_to_changelog: bool; is_codemod_followup: bool
+    last_confidence: Confidence | None; diagnosis_confidence: Confidence | None
     policy_denials_in_step: int; schema_invalid_in_step: bool
-    critic_verdict: Literal["approve", "revise", "escalate"] | None
-    explorer_flags: frozenset[Literal["no_citations", "over_cap", "repeated_question"]]
-    pr_template_rejected: bool
+    critic_verdict: CriticDecision | None
+    explorer_flags: frozenset[ExplorerFlag]; pr_template_rejected: bool
     sticky: StickyState
+    def inputs_hash(self, policies: RoutingPolicies) -> str: ...   # sha256 of canonical JSON
 
-class RoutingPolicy(BaseModel, frozen=True):
-    policy: Literal["routed", "all_opus", "all_sonnet"]
-    effort_policy: Literal["routed", "all_high"]           # all_opus ⇒ all_high (validated)
+class RoutingPolicies(BaseModel, frozen=True):       # all_opus => all_high; pins re-validated (P1-06)
+    policy: RoutingPolicy; effort_policy: EffortPolicy; pins: Mapping[Role, RolePin]
+    # SPEC §8.4 "Pins": a pin replaces the default tier/effort only; triggers, effort
+    # escalation, stickiness and medium conditions always apply on top
 
 class RouteOutcome(BaseModel, frozen=True):          # B9: pure result, no IDs
-    tier: Tier; effort: Effort; reason_codes: tuple[str, ...]
-    escalated_from: Tier | None; effort_escalated_from: Effort | None
+    tier: Tier; effort: Effort; reason_codes: tuple[str, ...]   # at least one
+    escalated_from: Literal[Tier.SONNET] | None; effort_escalated_from: Literal[Effort.MEDIUM] | None
     sticky: bool; new_sticky: StickyState; inputs_hash: str
+    def to_decision(self, *, decision_id, run_id, step_id, ctx, policies) -> RoutingDecision: ...
+        # refuses an outcome whose inputs_hash is not ctx.inputs_hash(policies)
 
 class ModelRouter(Protocol):
-    def route(self, ctx: RoutingContext, policy: RoutingPolicy) -> RouteOutcome:
-        """Pure and deterministic. The orchestrator wraps the outcome into a §12 RoutingDecision.
-        Invariants (property-tested): never Haiku; effort ∈ {medium, high}; Opus ⇒ high;
-        Planner/Critic/Diagnoser/Analyzer/test_touch ⇒ high; any trigger fired ⇒ high; sticky
-        (never de-escalates); B2/B3 ⇒ opus/high under every policy; Explorer and PR Writer stay
-        sonnet under `routed` (only their effort escalates) (B8). Sticky scope: per step, or per
-        run phase for step-less calls."""
+    def route(self, ctx: RoutingContext, policies: RoutingPolicies) -> RouteOutcome: ...
+        # pure, deterministic; never reads clock, budget or usage
+
+class EscalationTrigger(StrEnum): ...                 # the eight §8.4 triggers, t1 ... t8
+def fired_triggers(ctx: RoutingContext) -> frozenset[EscalationTrigger]: ...
+def sonnet_allowed_by_default(ctx: RoutingContext) -> bool: ...   # §8.4 "Sonnet allowed only when"
+def is_trivial_edit(ctx: RoutingContext) -> bool: ...             # the only Editor medium case
+def minimal_sticky_after(ctx, policies) -> StickyState: ...       # least new_sticky any outcome must carry
+
+def route_invariant_violations(ctx, policies, out) -> list[str]: ...
+    # everything forbidden or forced, for every router version: fixed roles and policies (B8);
+    # pins honoured upward only; Sonnet conditions for unpinned routed roles; any fired trigger
+    # => high, recorded in new_sticky, and opus for routed roles under `routed`; never
+    # de-escalates; medium only when every §8.4 condition holds (incl. nothing fired earlier in
+    # scope, trivial edit for the Editor, no Explorer flags, no rejected PR draft); every
+    # escalation (tier, effort, trigger) recorded in new_sticky so the next call can't undo it.
+    # An Explorer call shares its step's StickyState, so its escalation also rules out Editor
+    # medium for the rest of the step (stricter than required, on purpose).
 ```
 
 The orchestrator stores `StickyState` per step and passes it back in each call. That's how stickiness works while `route` stays pure.
+Test double: `testing.doubles.FixedRouter`.
 
 ## 6. Tools and tool policy (`tools/base.py`, `policy/hooks.py`)
 
 ```python
-class ToolSpec(BaseModel, frozen=True):
+REGISTRY_TOOL_NAMES: frozenset[str]                  # exactly §9.1 + explore; a test parses SPEC §9.1
+EXPLORE_CALLER_ROLES: frozenset[Role]                # roles with `explore` (§8.2, §8.5)
+MCP_TOOL_PREFIX = "mcp__mpilot__"
+def mcp_name(tool: str) -> str: ...; def bare_name(exposed: str) -> str | None: ...   # None => deny
+
+class ToolEffect(StrEnum): READ; WRITE; EXEC; NETWORK; DELEGATE
+
+@dataclass(frozen=True)
+class ToolSpec:                                      # name must be in the registry
     name: str; description: str
-    input_model: type[BaseModel]; output_model: type[BaseModel]
-    effect: Literal["read", "write", "exec", "network"]
+    input_model: type[BaseModel]; output_model: type[BaseModel]; effect: ToolEffect
 
-class ToolContext(BaseModel, frozen=True):
-    run_id: RunId; step_id: StepId | None; attempt_id: str | None; role: Role
-    step_type: StepType | None; plan_test_touch_files: frozenset[str]
+class ToolContext(BaseModel, frozen=True):           # built by the orchestrator, never from model output
+    run_id: RunId; role_call_id: LLMCallId; role: Role; caller: Role | None
+    step_id: StepId | None; step_type: StepType | None; attempt_id: AttemptId | None
+    step_target_files: frozenset[str]                # test_touch: the only test files writable (H3)
+    flag_justifications: Mapping[str, str]           # H8 (A11)
+    max_tool_calls: int                              # remaining per-attempt allowance (§8.3); every
+                                                     # invocation counts, denied ones too
 
-class Tool(Protocol):
-    spec: ClassVar[ToolSpec]
-    async def run(self, args: BaseModel, ctx: ToolContext, env: ToolEnv) -> BaseModel: ...
+class Tool(Protocol[InT_contra, OutT_co]):           # constructed per run with only its dependencies
+    spec: ToolSpec                                   # (Workspace, Sandbox, ...): no ToolEnv
+    async def run(self, args: InT_contra, ctx: ToolContext) -> OutT_co: ...
 
-class ToolEnv(Protocol):            # what tools may touch; built by the orchestrator per run
-    workspace: Workspace; sandbox: Sandbox; knowledge: KnowledgeService; notes: NotesStore
+class HostDenyCode(StrEnum): UNKNOWN_TOOL; ROLE_NOT_ALLOWED; INVALID_ARGS; TOOL_CALL_CAP
 
-class PolicyDecision(BaseModel, frozen=True):
-    allow: bool; code: str | None; reason: str | None
-
-class ToolPolicy(Protocol):
-    def pre(self, tool: str, args: BaseModel, ctx: ToolContext) -> PolicyDecision: ...
-    def post(self, tool: str, output: BaseModel, ctx: ToolContext) -> BaseModel: ...  # redaction (A3)
+class ToolInvocation(BaseModel, frozen=True):        # mirrors the §12 ToolCall row
+    tool_call_id: ToolCallId; tool: str; decision: PolicyDecision
+    output: dict | None; deny_code: str | None; deny_reason: str | None
+    def for_model(self) -> dict[str, Any]: ...       # a denial is a normal result for the model
 
 class ToolHost(Protocol):
-    """The only path from a model to a tool. Enforces role allowlist + pre policies,
-    runs the tool, applies post policies, persists a ToolCall row, checkpoints (NFR-4)."""
-    def specs_for(self, role: Role) -> list[ToolSpec]: ...
-    async def invoke(self, name: str, raw_args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]: ...
+    registry: Mapping[str, ToolSpec]                 # read-only property
+    def specs_for(self, role: Role) -> Sequence[ToolSpec]: ...
+    async def invoke(self, name: str, raw_args: Mapping[str, Any], ctx: ToolContext) -> ToolInvocation:
+        """name = exactly what the model sent. Order: cap -> resolve name -> role allowlist ->
+        validate args -> pre-policies (first deny wins) -> run -> post-policies (redaction last)
+        -> ToolCall row + checkpoint. Refusals return a denied invocation, never raise; an
+        unexpected tool exception is recorded, then re-raised (END_ERROR)."""
 
-# Tool registry = exactly the §9.1 tools + `explore` (§8.5). A test asserts the set: no GitHub
-# tools, no commit/push/PR tools (§11.3 control 2, §9.1). `explore` is a ToolSpec whose run()
-# asks the orchestrator for an Explorer role call (orchestrator-mediated, §8.5).
+class PolicyVerdict(BaseModel, frozen=True):         # policy/hooks.py
+    decision: PolicyDecision; policy: str | None; code: str | None; reason: str | None
+    allowed -> bool; allow() / deny(policy, code, reason)
+
+class ToolPolicy(Protocol):
+    name: str
+    def pre(self, spec: ToolSpec, args: BaseModel, ctx: ToolContext) -> PolicyVerdict: ...
+    def post(self, spec: ToolSpec, output: BaseModel, ctx: ToolContext) -> BaseModel: ...  # redaction (A3)
+
+def run_pre(policies, spec, args, ctx) -> PolicyVerdict: ...
+def run_post(policies, spec, output, ctx) -> BaseModel: ...   # TypeError if a policy breaks the schema
 ```
+
+No GitHub tools and no commit, push or PR tools (§11.3 control 2, §9.1); a test asserts it. `explore` is a `DELEGATE` tool whose `run()` asks the orchestrator for an Explorer role call (§8.5).
+Test doubles: `InMemoryToolHost` (the invoke pipeline without the DB), `StaticTool`, `DenyToolsPolicy`.
 
 ## 7. Sandbox and workspace (`sandbox/`)
 
@@ -239,38 +296,81 @@ class Workspace(Protocol):                                   # host side, A1: op
     def walk_tree(self, exclude: ArtifactRules) -> TreeSnapshot: ...   # path → (mode, sha256); ignores .git, never follows links;
                                                              # exclusions from mirror .gitignore@base_sha + fixed list only
     def restore(self, snapshot_ref: str, mirror: Path) -> None: ...  # write tree from refs/mpilot/attempt/<n> (revert, crash)
-```
-
-## 8. Gate checks (`policy/`)
-
-```python
-class GateInput(BaseModel, frozen=True):
-    baseline: Baseline                                       # incl. P0 ids, flaky ids, test-file hashes
-    final: FinalVerification                                 # whole pipeline from mirror_commit (SPEC §9.5); all checks judge this
-    diff: WorkspaceDiff                                      # host-computed: walk_tree vs mirror@base_sha (A2)
-    tree: TreeSnapshot; mirror_commit: str                   # mirror tree must equal walked tree
-    plan: Plan
-    env: EnvProfile                                          # resolved versions and coverage come from `final` (D4: lost coverage ⇒ violation)
-    flag_justifications: dict[str, str]                      # H8 (A11): flag → plan justification
-    removed_api_patterns: list[ApiPattern]                   # D3: curated registry list only
-
-class Violation(BaseModel, frozen=True):
-    check_id: str; code: str; message: str; path: str | None; hunk: str | None
-
-class PolicyCheck(Protocol):
-    id: str                                                  # "integrity.a" ... "integrity.h", "diff_limits", ...
-    def evaluate(self, inp: GateInput) -> list[Violation]: ...   # pure; empty list = pass
-
-class TestFileClassifier(Protocol):                          # D2
-    def is_test_file(self, rel_path: str) -> bool: ...
-    def is_test_config(self, rel_path: str) -> bool: ...
-```
 
 class Mirror(Protocol):                                      # host-owned clone, never mounted (SPEC §9.5)
     path: Path; base_sha: str
     def record_snapshot(self, ref: str, tree: TreeSnapshot, ws: Workspace) -> None: ...  # refs/mpilot/phase/<n>, attempt/<n>
     def build_phase_commits(self, refs: Sequence[str]) -> str: ...   # diffs between consecutive snapshots; returns head sha
     def tree_equals(self, sha: str, tree: TreeSnapshot) -> bool: ...  # gate check (i)
+```
+
+## 8. Gate checks (`policy/gate.py`, `policy/test_files.py`, `models/artifacts.py`)
+
+```python
+# models/artifacts.py: host-computed data, never from sandbox git (SPEC §9.5)
+class TreeEntry(BaseModel, frozen=True): mode: Literal["100644", "100755", "120000"]; sha256: str
+class TreeSnapshot(BaseModel, frozen=True):          # Workspace.walk_tree output or a commit's tree
+    entries: dict[str, TreeEntry]                    # relative POSIX paths, never under .git
+    def digest(self) -> str: ...
+class ChangeKind(StrEnum): ADDED; MODIFIED; DELETED  # no renames: a renamed test is a deleted test
+class Hunk(BaseModel, frozen=True): old_start; old_lines; new_start; new_lines; text
+class FileChange(BaseModel, frozen=True): path; kind; old: TreeEntry | None; new: TreeEntry | None; hunks; binary
+class WorkspaceDiff(BaseModel, frozen=True):         # between two host mirror commits
+    base: str; target: str; target_digest: str       # target tree's TreeSnapshot.digest()
+    files: list[FileChange]                          # sorted, unique
+class TestCounts(BaseModel, frozen=True): passed; failed; skipped; errors          # runner log summary
+class FinalVerification(BaseModel, frozen=True):     # fresh sandbox from mirror_commit (§9.5)
+    mirror_commit: str; verify: VerifyResult; tests: TestResult       # tests.stage == final
+    runner_exit_code: int | None; runner_summary: TestCounts | None   # (a) cross-check
+    resolved_versions: dict[str, str]; coverage_pct: float | None     # (g), (f) extra run
+    cache: Literal["fresh", "hash_verified"]
+class ApiPattern(BaseModel, frozen=True): api; ecosystem; pattern (compiles); globs   # D3 curated only
+
+# policy/gate.py
+class TreeReader(Protocol):                          # read-only view of one mirror commit
+    commit: str
+    def snapshot(self) -> TreeSnapshot: ...          # (i) compares commit_tree.snapshot() with walked_tree
+    def paths(self) -> frozenset[str]: ...
+    def read_text(self, rel_path: str) -> str | None: ...   # None for a needed file => violation
+
+@dataclass(frozen=True)
+class GateInput:
+    spec: MigrationSpec; baseline: Baseline; env: EnvProfile; plan: Plan
+    base_sha: str; mirror_commit: str                # the run's base; the commit to push
+    final: FinalVerification                         # the only results any check may use
+    walked_tree: TreeSnapshot                        # (i) vs commit_tree.snapshot()
+    diff: WorkspaceDiff                              # base_sha -> mirror_commit
+    base_tree: TreeReader; commit_tree: TreeReader   # contents for (e), (h)
+    classifier: TestFileClassifier
+    allowed_files: frozenset[str]                    # §11.3 control 5
+    diff_limits: DiffSettings                        # NFR-8
+    step_diffs: Sequence[tuple[StepId, WorkspaceDiff]]   # plan order; test_touch hunk mapping (d)
+    flag_justifications: Mapping[str, str]           # H8 (A11)
+    removed_api_patterns: Sequence[ApiPattern]       # D3
+
+class PolicyCheck(Protocol):
+    id: str                                          # "integrity.a" ... "integrity.i", "diff_limits", ...
+    def evaluate(self, inp: GateInput) -> list[Violation]: ...   # pure; empty list = pass
+
+def binding_violations(inp: GateInput) -> list[Violation]: ...
+    # "gate" violations: final run, commit_tree, diff target/digest not the pushed commit
+    # (commit_mismatch); diff base or base_tree not base_sha (base_mismatch); plan of another
+    # run (run_mismatch); step_diffs not one chain of plan steps, in plan order, from base_sha
+    # to the pushed tree, or changes with no step diffs (step_chain)
+def evaluate_gate(checks, inp, *, required) -> IntegrityReport: ...
+    # binding_violations first, then every check; ValueError on no checks, empty `required`
+    # (no default: the gate can't pass by running nothing), duplicate, reserved ("gate") or
+    # missing check ids, or a violation under a foreign id
+
+# policy/test_files.py (D2; implementation P2-15). Predicates are independent, not exclusive.
+class TestFileClassifier(Protocol):
+    def is_test_file(self, rel_path: str) -> bool: ...          # (c), (d), baseline hashes
+    def is_test_config(self, rel_path: str) -> bool: ...        # (e) whole file
+    def may_embed_test_config(self, rel_path: str) -> bool: ... # (e) sections: package.json, pyproject, ...
+```
+
+`Violation` is the §12 model in `models/domain.py`.
+Test doubles: `SetClassifier`, `DictTree`, `ConstantCheck`.
 
 ## 9. VCS (`vcs/`)
 
