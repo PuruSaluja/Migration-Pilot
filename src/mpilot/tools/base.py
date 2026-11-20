@@ -119,6 +119,9 @@ class ToolContext(BaseModel):
     role_call_id: LLMCallId  # the role call these tool calls belong to; ToolHost counts per id
     role: Role
     caller: Role | None = None  # set exactly for Explorer calls: the role that asked (§8.5)
+    #: Set exactly for Explorer calls: the role call whose `explore` started this one, so the
+    #: `LLMCall` row nests under it (FR-18 traces, §8.5 Critic citations).
+    parent_call_id: LLMCallId | None = None
     step_id: StepId | None = None
     step_type: StepType | None = None
     attempt_id: AttemptId | None = None
@@ -139,6 +142,10 @@ class ToolContext(BaseModel):
             raise ValueError("caller is set exactly for Explorer calls")
         if self.caller is not None and self.caller not in EXPLORE_CALLER_ROLES:
             raise ValueError(f"{self.caller} has no `explore` tool (§8.2, §8.5)")
+        if (self.parent_call_id is None) != (self.caller is None):
+            raise ValueError("parent_call_id is set exactly for Explorer calls")
+        if self.parent_call_id == self.role_call_id:
+            raise ValueError("a role call cannot be its own parent")
         if (self.step_id is None) != (self.step_type is None):
             raise ValueError("step_id and step_type are set together")
         if self.step_id is None and (self.attempt_id is not None or self.step_target_files):

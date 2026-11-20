@@ -201,7 +201,8 @@ Each requirement lists acceptance criteria (AC). Automate the AC wherever feasib
 - **FR-21 Usage-limit awareness.** The runtime detects subscription usage-limit and rate-limit errors.
   - AC: the run moves to `PAUSED_LIMIT` with a checkpoint, and the sandbox is torn down after exporting the workspace.
   - AC: `mpilot resume <id>` restores the workspace and continues from the last completed tool call. Completed role calls are never repeated. A role call that was interrupted restarts from the workspace as it was after its last completed tool call, given a summary of the tool calls it had made; its tokens still count.
-  - AC: routing sticky state, attempt counters and failure history are part of every checkpoint, so a resume never de-escalates.
+  - AC: routing sticky state, the per-scope routing counters (policy denials, schema-invalid answers, last confidence, Explorer question hashes and answer flags, PR template rejection), attempt counters and failure history are part of every checkpoint, so a resume never de-escalates.
+  - AC: a checkpoint names a role call as in flight before it starts; its `LLMCall` row (stop reason, turns, redacted output) is written before the checkpoint that lists it as completed, and a resume first folds in every row written after the last checkpoint. The next role is always given the stored output, so a resume between two role calls (Diagnoser → Editor, Analyzer → Planner) re-runs neither and loses no hypotheses or routing inputs.
   - AC: bench batches pause and resume the same way.
 - **FR-22 Model routing** (§8.4).
   - AC: `route()` is pure and deterministic, with unit tests covering every default and every escalation trigger.
@@ -605,7 +606,7 @@ The sandbox controls everything inside `/workspace`, including `.git` (config, h
 ### 10.1 Stores
 - **Run state (DB):** authoritative, checkpointed after every tool call. Enables crash and usage-limit resume.
 - **Attempt snapshots:** each attempt's end state is recorded on the host as a mirror ref, `refs/mpilot/attempt/<n>` (§9.5; run-wide `n`, §12), so reverting to the best attempt is trivial and doesn't trust sandbox git. The workspace is exported on pause.
-- **Crash recovery:** after a crash (as opposed to a usage-limit pause), the side effects of an in-flight tool call are unknown, so the workspace is restored to the latest host snapshot (attempt, else phase, else `base_sha`) and the interrupted step restarts. An install is forced after any restore, because dependency directories aren't in snapshots.
+- **Crash recovery:** after a crash (as opposed to a usage-limit pause), the side effects of an in-flight tool call are unknown, so the workspace is restored to the latest host snapshot (attempt, else phase, else `base_sha`) and the interrupted step restarts. Role calls of the interrupted unit (state, step, attempt) that finished before its first edit keep their recorded outputs and are not repeated; the first editing call and everything after it run again, and the in-flight call restarts without a tool-call summary. Snapshots (attempt and phase refs) are taken only as their attempt or phase ends, so a restore never keeps the unit's own edits. An install is forced after any restore, because dependency directories aren't in snapshots.
 - **Migration notes:** `write_note` stores confirmed facts, rejected hypotheses and repo conventions. They are injected into every role prompt (≤ 2k tokens).
 - **Failure history:** `{signature, attempts, hypotheses_tried, outcome}`. Used for no-progress detection and to tell the Diagnoser what not to retry.
 - **Cross-run playbooks (post-v1):** human-reviewed markdown, **disabled during benchmark runs.**
@@ -725,9 +726,13 @@ class Attempt:        id; step_id; n  # run-wide, unique per run, = refs/mpilot/
                       n_in_step; diagnosis?: Diagnosis; diff_sha; verify: VerifyResult
                       outcome: improved|same|regressed|green
 class Diagnosis:      signature; category: FailureCategory; evidence; hypotheses; files; changelog_refs
-class ToolCall:       id; attempt_id?; role; tool; input; output_summary; duration_ms
+class ToolCall:       id; role_call_id  # the LLMCall that made it (FR-18 replay, §8.5)
+                      attempt_id?; role; tool; input; output_summary; duration_ms
                       policy_decision: allow|deny; deny_reason?
-class LLMCall:        id; role; runtime; model; tier: opus|sonnet; effort: medium|high; routing_decision_id
+class LLMCall:        id; role; step_id?; attempt_id?; parent_call_id?  # set exactly for Explorer calls
+                      runtime; model; tier: opus|sonnet; effort: medium|high; routing_decision_id
+                      stop?: StopReason  # completed|schema_invalid|max_turns|budget_stop|tool_call_cap; unset iff limit_error
+                      turns; output?  # final answer, redacted and schema-valid; set iff stop = completed
                       input_tokens; output_tokens; cache_read_tokens; cache_write_tokens; thinking; api_equiv_usd
                       latency_ms; limit_error?
 class RoutingDecision: id; run_id; step_id?; role; policy: routed|all_opus|all_sonnet
@@ -1252,6 +1257,7 @@ Quality is the metric, not speed. With roughly two-thirds of tasks on Sonnet, ex
 | 2026-11-20 | v1.4 (P1-12 gate): `IntegrityReport` and `CriticVerdict` record the `mirror_commit` they judged, and the report the `checks` that ran (§12); the success push requires `commit == final verification == report == verdict` commit | Run-id binding let a passing report or approving verdict from an earlier INTEGRITY_CHECK pass vouch for a newer commit (§9.5, §7.4) |
 | 2026-11-20 | v1.4 (P1-12 gate): `Attempt.n` is the run-wide attempt number, unique per run and equal to the `n` of `refs/mpilot/attempt/<n>`; `Attempt.n_in_step` is the per-step ordinal (§12) | A per-step `n` made attempt refs collide across steps, so revert-to-best could restore the wrong tree |
 | 2026-11-20 | v1.4 (P1-12 gate): §8.1 item 9: no configurable `ANTHROPIC_*` passthrough (the `runtime.anthropic_env` setting is removed); the SDK gets only the fixed model pins, every alias pinned to the configured ID, the background model to Sonnet | The setting could re-point the background model and set `ANTHROPIC_BASE_URL`, sending the OAuth token elsewhere (§8.1 items 8-9) |
+| 2026-11-20 | v1.4 (P1-12 gate): `LLMCall` records `step_id`, `attempt_id`, `parent_call_id` (Explorer nesting), `stop`, `turns` and the redacted, schema-valid `output`; `ToolCall` records `role_call_id`; checkpoints carry per-scope routing counters, the in-progress attempt's id and the unit's completed role calls, and refuse lowering any of them (§12, FR-21); after a crash, calls that finished before the unit's first edit are kept and the rest re-run, each restore bumping a `restore_epoch` (§10.1); checkpoints record the last tool-call and role-call rows they folded in, and a resume folds in any later rows first; `attempt_n` equals the count of started attempts and exists only in REPAIR_LOOP; an answer the redaction makes schema-invalid is recorded as SCHEMA_INVALID | Without them a resume between two role calls re-ran the first or lost its output (Diagnoser hypotheses, the Analyzer's `AnalysisReport`), and a crash between two policy denials reset trigger 3 |
 
 ---
 

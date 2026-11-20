@@ -249,6 +249,7 @@ class DbToolCall(_Append, Base):
 
     run_id: Mapped[str] = mapped_column(ForeignKey("runs.id", ondelete="CASCADE"))
     id: Mapped[str] = mapped_column(String, unique=True)
+    role_call_id: Mapped[str] = mapped_column(String)  # no FK: the LLMCall row comes later
     attempt_id: Mapped[str | None] = mapped_column(String)
     role: Mapped[str] = mapped_column(String)
     tool: Mapped[str] = mapped_column(String)
@@ -260,6 +261,7 @@ class DbToolCall(_Append, Base):
     __table_args__ = (
         Index("ix_tool_calls_run_id_seq", "run_id", "seq"),
         Index("ix_tool_calls_attempt_id", "attempt_id"),
+        Index("ix_tool_calls_role_call_id", "role_call_id"),
         CheckConstraint("duration_ms >= 0", name="duration_nonneg"),
         CheckConstraint(_in("policy_decision", ("allow", "deny")), name="decision_known"),
         CheckConstraint(
@@ -296,13 +298,17 @@ class DbRoutingDecision(_Append, Base):
 
 
 class DbLLMCall(_Append, Base):
-    """`LLMCall`: one row per model call, linked to the decision that chose its model."""
+    """`LLMCall`: one row per finished or limit-interrupted role call, linked to the decision
+    that chose its model. The final answer (`output`) is only in `doc`."""
 
     __tablename__ = "llm_calls"
 
     run_id: Mapped[str] = mapped_column(ForeignKey("runs.id", ondelete="CASCADE"))
     id: Mapped[str] = mapped_column(String, unique=True)
     role: Mapped[str] = mapped_column(String)
+    step_id: Mapped[str | None] = mapped_column(String)
+    attempt_id: Mapped[str | None] = mapped_column(String)
+    parent_call_id: Mapped[str | None] = mapped_column(String)  # no FK: the parent ends later
     runtime: Mapped[str] = mapped_column(String)
     model: Mapped[str] = mapped_column(String)
     tier: Mapped[str] = mapped_column(String)
@@ -317,12 +323,15 @@ class DbLLMCall(_Append, Base):
     thinking: Mapped[bool] = mapped_column(Boolean)
     api_equiv_usd: Mapped[float] = mapped_column(Float)
     latency_ms: Mapped[int] = mapped_column(Integer)
+    stop: Mapped[str | None] = mapped_column(String)
+    turns: Mapped[int] = mapped_column(Integer)
     limit_error: Mapped[str | None] = mapped_column(Text)
     doc: Mapped[dict[str, Any]]
 
     __table_args__ = (
         Index("ix_llm_calls_run_id_seq", "run_id", "seq"),
         Index("ix_llm_calls_routing_decision_id", "routing_decision_id"),
+        Index("ix_llm_calls_attempt_id", "attempt_id"),
         CheckConstraint(_in("tier", ("opus", "sonnet")), name="tier_known"),
         CheckConstraint(_in("effort", ("medium", "high")), name="effort_known"),
         CheckConstraint("NOT (tier = 'opus' AND effort = 'medium')", name="opus_never_medium"),
@@ -332,6 +341,19 @@ class DbLLMCall(_Append, Base):
             " AND cache_write_tokens >= 0 AND api_equiv_usd >= 0 AND latency_ms >= 0",
             name="usage_nonneg",
         ),
+        CheckConstraint("turns >= 0", name="turns_nonneg"),
+        CheckConstraint(
+            "stop IS NULL OR "
+            + _in(
+                "stop", ("completed", "schema_invalid", "max_turns", "budget_stop", "tool_call_cap")
+            ),
+            name="stop_known",
+        ),
+        CheckConstraint("(stop IS NULL) = (limit_error IS NOT NULL)", name="stop_xor_limit"),
+        CheckConstraint(
+            "(parent_call_id IS NOT NULL) = (role = 'explorer')", name="parent_iff_explorer"
+        ),
+        CheckConstraint("attempt_id IS NULL OR step_id IS NOT NULL", name="attempt_needs_step"),
     )
 
 

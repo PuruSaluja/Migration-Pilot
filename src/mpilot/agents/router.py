@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import unicodedata
 from collections.abc import Mapping
 from enum import StrEnum
 from typing import Annotated, Literal, Protocol, Self, runtime_checkable
@@ -27,6 +28,7 @@ from mpilot.core.types import (
     Effort,
     EffortPolicy,
     FailureCategory,
+    LLMCallId,
     Outcome,
     Role,
     RoutingDecisionId,
@@ -34,6 +36,7 @@ from mpilot.core.types import (
     RunId,
     StepId,
     StepType,
+    StopReason,
     Tier,
 )
 from mpilot.model_policy import (
@@ -46,9 +49,12 @@ from mpilot.model_policy import (
 from mpilot.models.domain import (
     Confidence,
     CriticDecision,
+    LLMCall,
     MigrationKind,
     NonNegInt,
+    PolicyDecision,
     RoutingDecision,
+    ToolCall,
 )
 from mpilot.tools.base import EXPLORE_CALLER_ROLES
 
@@ -97,6 +103,151 @@ class ExplorerFlag(StrEnum):
 
 
 _FlagSet = Annotated[frozenset[ExplorerFlag], PlainSerializer(sorted, return_type=list[str])]
+
+
+_StrSet = Annotated[frozenset[str], PlainSerializer(sorted, return_type=list[str])]
+
+
+def explorer_question_hash(caller: Role, question: str, scope: str | None = None) -> str:
+    """Key for "the caller repeating the same Explorer question" (§8.4 effort escalation):
+    SHA-256 over the caller role, the question (NFKC, case-folded, whitespace collapsed) and
+    the `explore` scope argument, normalized the same way."""
+
+    def norm(text: str) -> str:
+        return " ".join(unicodedata.normalize("NFKC", text).casefold().split())
+
+    canon = json.dumps([caller.value, norm(question), norm(scope or "")], separators=(",", ":"))
+    return hashlib.sha256(canon.encode()).hexdigest()
+
+
+class RoutingCounters(_Frozen):
+    """Router inputs that come from what already happened in a scope (a plan step, or a run
+    phase for step-less calls), not from the plan or the call itself (§8.4 `ctx`).
+
+    The orchestrator keeps one per `StickyScope` in every checkpoint (`Checkpoint.routing`),
+    updated after every tool call and role call, so a crash or pause loses none: one denial
+    before a crash and one after still fire trigger 3 (FR-21: a resume never de-escalates).
+    Everything only grows within the scope, except `last_confidence`, which each newer
+    completed call replaces (`Checkpoint.covers` checks both).
+    """
+
+    policy_denials: NonNegInt = 0  # denied tool calls in scope; 2 fire trigger 3
+    schema_invalid: NonNegInt = 0  # calls in scope that ended SCHEMA_INVALID; 1 fires trigger 3
+    #: Self-reported confidence of the latest completed call in scope (trigger 5), and which
+    #: call reported it. Nested Explorer calls count: a low value only pushes up.
+    last_confidence: Confidence | None = None
+    last_confidence_call: LLMCallId | None = None
+    #: Every call whose confidence was recorded in scope, so `covers` can tell a newer call's
+    #: value from a switch back to an older one (which could reset trigger 5).
+    confidence_calls: _StrSet = frozenset()
+    explorer_questions: _StrSet = frozenset()  # `explorer_question_hash` of every question
+    #: Problems seen on Explorer answers or questions in scope. Kept for the rest of the scope:
+    #: the effort escalation they cause is sticky anyway.
+    explorer_flags: _FlagSet = frozenset()
+    pr_template_rejected: bool = False  # a PR Writer draft failed template validation
+
+    @model_validator(mode="after")
+    def _check(self) -> Self:
+        if (self.last_confidence is None) != (self.last_confidence_call is None):
+            raise ValueError("last_confidence and last_confidence_call are set together")
+        if self.last_confidence_call is not None and (
+            self.last_confidence_call not in self.confidence_calls
+        ):
+            raise ValueError("last_confidence_call must be among confidence_calls")
+        for h in self.explorer_questions:
+            if len(h) != 64 or any(c not in "0123456789abcdef" for c in h):
+                raise ValueError(f"not an explorer_question_hash: {h!r}")
+        return self
+
+    def covers(self, other: RoutingCounters) -> bool:
+        """True if `self` keeps everything `other` recorded: no count lowered, no question
+        hash, flag or confidence call dropped, no rejection forgotten, a confidence never
+        cleared, the same call's confidence never changed, and a change of call only to one
+        never recorded before (a newer call, not a switch back)."""
+        if self.last_confidence_call == other.last_confidence_call:
+            conf_kept = self.last_confidence == other.last_confidence
+        else:
+            conf_kept = (
+                self.last_confidence_call is not None
+                and self.last_confidence_call not in other.confidence_calls
+            )
+        return (
+            self.policy_denials >= other.policy_denials
+            and self.schema_invalid >= other.schema_invalid
+            and conf_kept
+            and self.confidence_calls >= other.confidence_calls
+            and self.explorer_questions >= other.explorer_questions
+            and self.explorer_flags >= other.explorer_flags
+            and (self.pr_template_rejected or not other.pr_template_rejected)
+        )
+
+    def after_tool_call(self, call: ToolCall) -> RoutingCounters:
+        """Count a denied tool call (any denial: host, role, arguments or policy)."""
+        if call.policy_decision is not PolicyDecision.DENY:
+            return self
+        return self.model_copy(update={"policy_denials": self.policy_denials + 1})
+
+    def after_call(self, call: LLMCall) -> RoutingCounters:
+        """Fold in a recorded role call: a SCHEMA_INVALID ending, or a completed call's
+        `confidence` (required in every output schema, §8.4). A limit-interrupted call
+        changes nothing."""
+        if call.stop is StopReason.SCHEMA_INVALID:
+            return self.model_copy(update={"schema_invalid": self.schema_invalid + 1})
+        if call.output is None:
+            return self
+        conf = call.output.get("confidence")
+        if isinstance(conf, bool) or not isinstance(conf, int | float):
+            raise ValueError(f"call {call.id} output has no numeric confidence")
+        if call.id in self.confidence_calls:
+            return self  # this call's confidence is already in (a SCHEMA_INVALID fold is not
+            # idempotent: folding it twice over-counts, the safe direction)
+        return RoutingCounters.model_validate(
+            {
+                **self.model_dump(),
+                "last_confidence": float(conf),
+                "last_confidence_call": call.id,
+                "confidence_calls": self.confidence_calls | {call.id},
+            }
+        )
+
+    def asked(self, question_hash: str) -> RoutingCounters:
+        """Record an Explorer question before routing its call. A hash already seen in scope
+        adds `REPEATED_QUESTION`, which `apply` passes on, so that call runs at high."""
+        flags = self.explorer_flags
+        if question_hash in self.explorer_questions:
+            flags = flags | {ExplorerFlag.REPEATED_QUESTION}
+        return RoutingCounters.model_validate(
+            {
+                **self.model_dump(),
+                "explorer_questions": self.explorer_questions | {question_hash},
+                "explorer_flags": flags,
+            }
+        )
+
+    def flagged(self, *flags: ExplorerFlag) -> RoutingCounters:
+        """Record problems with an Explorer answer (no citations, over the token cap)."""
+        return self.model_copy(update={"explorer_flags": self.explorer_flags | set(flags)})
+
+    def pr_rejected(self) -> RoutingCounters:
+        return self.model_copy(update={"pr_template_rejected": True})
+
+    def apply(self, ctx: RoutingContext) -> RoutingContext:
+        """`ctx` with the counter-derived inputs filled in. Every field only moves towards
+        Opus/high: more denials, schema-invalid, the lower of the two confidences, more
+        flags. The Explorer flags go only to Explorer calls, the rejection only to PR Writer
+        calls."""
+        update: dict[str, object] = {
+            "policy_denials_in_step": max(ctx.policy_denials_in_step, self.policy_denials),
+            "schema_invalid_in_step": ctx.schema_invalid_in_step or self.schema_invalid > 0,
+        }
+        if self.last_confidence is not None:
+            mine, theirs = self.last_confidence, ctx.last_confidence
+            update["last_confidence"] = mine if theirs is None else min(mine, theirs)
+        if ctx.role is Role.EXPLORER:
+            update["explorer_flags"] = ctx.explorer_flags | self.explorer_flags
+        if ctx.role is Role.PR_WRITER:
+            update["pr_template_rejected"] = ctx.pr_template_rejected or self.pr_template_rejected
+        return RoutingContext.model_validate({**ctx.model_dump(), **update})
 
 
 class RoutingContext(_Frozen):

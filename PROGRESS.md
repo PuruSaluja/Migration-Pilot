@@ -4,17 +4,19 @@
 Phase 1: Foundations
 
 ## Next task
-[OPUS] P1-12b: Phase 1 gate fix B3, resume completeness (FR-21 "completed role calls are never repeated", "a resume never de-escalates"). From the gate review:
-- `LLMCall` gains `stop: StopReason | None`, `turns`, `output: dict | None` (redacted, schema-valid), `step_id`, `attempt_id`, `parent_call_id` (nested `explore`). Then a pause after the Diagnoser finishes but before the Editor starts doesn't re-run the Diagnoser or lose its hypotheses; same for Analyzer -> Planner. The Analyzer's `AnalysisReport` needs a home.
-- `ToolCall` gains `role_call_id` (also needed for FR-18 replay, Langfuse span nesting, and the §8.5 check that the Critic cites files it read itself).
-- `Checkpoint` gains per-`StickyScope` routing counters (policy denials, schema-invalid count, last confidence, Explorer question hashes), and `covers()` refuses lowering them. Otherwise one denial before a crash and one after never fire trigger 3.
-- Update `llm_call_from`, tables (amend 0001: still pre-freeze), store, SPEC §12 + §20, docs; spec-reviewer on the diff (touches the router inputs).
-Run on Opus 5.5 at high effort.
+[OPUS] P1-12c: Phase 1 gate fix B5, process coordination: a driver lease on `RunStore`; a cancel request; `save_run` only by the lease holder (or compare-and-set); the checkpoint authoritative, with `Run` updated in the same transaction; `decide_plan`/`cancel` semantics with and without a live driver (§13.1, FR-21, NFR-4, C6). Acceptance: cancel from another process reaches a live driver; no lost END_CANCELLED; two resumes can't both drive a run; spec-reviewer approves. Also from P1-12b: a resume's `ResumePoint.checkpoints` must be written under the lease, and consider writing a role call's row and the checkpoint that folds it in as one transaction. Run on Opus 5.5 at high effort.
 
 ## In progress
 (none)
 
 ## Done
+- P1-12b (2026-11-20): Phase 1 gate fix B3, resume completeness. Spec-reviewer: pass 1 CHANGES REQUIRED (5 blockers, all in the resume protocol), pass 2 APPROVED; 4 of its 5 non-blocking points applied.
+  - `LLMCall` gains `step_id`, `attempt_id`, `parent_call_id` (set exactly for Explorer), `stop` (None exactly when `limit_error`), `turns`, and `output` (redacted, schema-valid, set exactly when COMPLETED). `ToolCall` gains `role_call_id`. `ToolContext.parent_call_id`. `StopReason` moved to `core/types.py`.
+  - `llm_call_from(..., redact=...)`: redacts the answer's JSON (non-ASCII unescaped). An answer the redaction makes schema-invalid is recorded as SCHEMA_INVALID; a redactor that breaks the JSON raises.
+  - `RoutingCounters` (router.py), one per scope in `Checkpoint.routing`: denials, schema-invalid, last confidence (+ `confidence_calls`), Explorer question hashes (`explorer_question_hash`), Explorer flags, PR template rejection; `after_tool_call`/`after_call`/`asked`/`flagged`/`pr_rejected`/`apply` (only towards Opus/high).
+  - `Checkpoint`: `attempt_id`, `routing`, `completed_calls`, `restore_epoch`, `last_llm_call_id`, `unit_key`, `scope`. `attempt_n == budget.attempts_total`, only in REPAIR_LOOP, never the running attempt's own snapshot. `covers()` refuses: lowered counters, dropped completed calls in a unit, a restore that doesn't cut back to a prefix, a lowered epoch, cleared row marks, re-entering or renumbering an attempt.
+  - `resume_point(cp, calls, tool_calls, *, at)`: checkpoints to write first (reconcile rows after the marks; after a crash, the restore), completed calls, pause restart, crash-undone calls. `latest_output` (the AnalysisReport's home).
+  - Tables, migration 0001 (amended, pre-freeze), store; SPEC §12, FR-21, §10.1, §20 row; docs/architecture.md (resume protocol). New `tests/unit/test_resume.py`: acceptance runs on the real SQLite store with reopens (pause between Diagnoser -> Editor and Analyzer -> Planner, crash windows, crash then pause, trigger 3 across a crash). 16 mutations of the new rules, all caught. 1302 green.
 - P1-12a (2026-11-20): Phase 1 gate, first part. The gate review (spec-reviewer) returned CHANGES REQUIRED with 6 blocking issues; the gate was split into P1-12a-d (over half a day). Fixed here, and the spec-reviewer approved the diff:
   - B4 (lockdown): `runtime.anthropic_env` removed. It let config override the Sonnet background pin and pass `ANTHROPIC_BASE_URL`, which could send the OAuth token elsewhere. The SDK now gets a fixed pin table (`model_policy.SDK_MODEL_PIN_TIERS`, read-only): all four aliases, each pinned to its tier's configured ID, background models to Sonnet. `anthropic_env_problems` is a strict check for P4-08: every pin present and exact, no other `ANTHROPIC_*` name.
   - B6: `AgentRuntime.call` contract states the order: `after_turn` when the response arrives, before the turn's tools; a crossing turn's answer is discarded. `ScriptedTurn` must call tools or answer.
@@ -128,6 +130,13 @@ Run on Opus 5.5 at high effort.
     - S4: `binding_violations` needs each plan step once, strictly in order. A post-INTEGRITY_CHECK repair or a Critic revise on an earlier step (especially `test_touch`) can't pass. Settle segment semantics before P6-01.
     - S5: `Verifier.baseline` can't represent a red install/build/typecheck at baseline (`Baseline.runs` needs ≥ 1 run, no stage results). Specify `BaselineRedError` or add stage results.
 
+- 2026-11-20 (P1-12b), design points for the owner:
+  - **Resume protocol:** in-flight checkpoint before each role call; row when it ends; then a checkpoint that folds it in. A resume writes `ResumePoint.checkpoints` before routing anything. The next role is always given the stored `LLMCall.output`, so resumed and uninterrupted runs see the same input (a test compares request hashes).
+  - **Crash vs pause (SPEC §10.1 amended):** after a pause every finished call is kept; after a crash the workspace goes back to the latest snapshot, so the unit's first tree-writing call (Editor, B2, B3) and everything after it re-run, and the in-flight call is re-issued without a summary.
+  - Counters beyond the four the gate named: Explorer answer flags and PR template rejection (also history-based router inputs), and `confidence_calls` (so `covers` can refuse switching back to an older confidence). `last_confidence` counts nested Explorer calls too (stricter, only pushes up); P5-11 may refine.
+  - Deferred, from review pass 2: (1) `covers` can't check that a crash restore cuts exactly at the first tree writer (it has no roles); `resume_point` is the only writer that bumps `restore_epoch`. A stored `first_writer_index` would close it; decide in P3-05/P4-18. (2) Phase-snapshot timing ("only as the phase ends") is in SPEC §10.1 but not enforced; P3-06 fixes phase ref names. (3) With no row mark set, a resume folds every row of the run: correct, because marks are never cleared once set.
+  - For P4-16/P4-18: a call promoted by reconciliation still has its guard charges in `BudgetState.in_flight_*` (they count); the driver must `record_call` it.
+
 ## Task list
 
 How to read it:
@@ -160,7 +169,7 @@ How to read it:
 | P1-10 | SONNET | `RunStore` implementation, SQLite in WAL mode | §12, NFR-4 | P1-09 | Round-trip of every model; `journal_mode` = wal; checkpoint then latest_checkpoint returns it |
 | P1-11 | SONNET | `FakeRuntime` (scripted, goes through a `ToolHost`, can raise `UsageLimitError`) + `CassetteRuntime` replay (B6) | §18 rule 7, FR-21 | P1-07, P1-10 | Using a minimal test-double ToolHost: scripted run writes ToolCall and LLMCall rows; a scripted denial is recorded; a cassette request-hash mismatch fails loudly |
 | P1-12a | OPUS | Gate fixes B4 (no `ANTHROPIC_*` passthrough), B6 (call-order contract), B2 (run-wide `Attempt.n`), B1+S1 (report/verdict bound to the commit) | §8.1, §9.5, §12 | P1-01…11 | Done 2026-11-20; spec-reviewer approved the diff |
-| P1-12b | OPUS | Gate fix B3: resume completeness (completed role-call outputs and stop reasons on `LLMCall`, `ToolCall.role_call_id`, per-scope routing counters in `Checkpoint`) | FR-21, FR-18, §8.4, §12 | P1-12a | A pause between two role calls resumes without re-running the first; routing counters survive a crash (trigger 3 still fires); `covers()` refuses lowering them; spec-reviewer approves |
+| P1-12b | OPUS | Gate fix B3: resume completeness (completed role-call outputs and stop reasons on `LLMCall`, `ToolCall.role_call_id`, per-scope routing counters in `Checkpoint`) | FR-21, FR-18, §8.4, §12 | P1-12a | Done 2026-11-20; spec-reviewer approved the diff (second pass) |
 | P1-12c | OPUS | Gate fix B5: process coordination (driver lease on `RunStore`, cancel request, `save_run` only by the lease holder or compare-and-set, checkpoint authoritative with `Run` updated in the same transaction; `decide_plan`/`cancel` semantics with and without a live driver) | §13.1, FR-21, NFR-4, C6 | P1-12b | Tests: cancel from another process reaches a live driver; no lost END_CANCELLED; two resumes can't both drive a run; spec-reviewer approves |
 | P1-12d | OPUS | **Phase 1 gate:** full spec-reviewer re-review of the interface set; decide S2–S5; freeze `docs/architecture.md` | §16.4 P1 DoD | P1-12c | `mpilot --help` works; checks green; spec-reviewer approves |
 

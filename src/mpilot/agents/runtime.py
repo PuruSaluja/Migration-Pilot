@@ -10,14 +10,23 @@ from __future__ import annotations
 
 import hashlib
 import json
-from enum import StrEnum
+from collections.abc import Callable
 from typing import Annotated, Any, Protocol, Self, runtime_checkable
 
 from jsonschema import Draft202012Validator
 from pydantic import BaseModel, ConfigDict, Field, PlainSerializer, field_validator, model_validator
 
 from mpilot.core.errors import ForbiddenModelError, LockdownViolation, RuntimeCallError
-from mpilot.core.types import Effort, LLMCallId, Role, RoutingDecisionId, Tier, ToolCallId, Usage
+from mpilot.core.types import (
+    Effort,
+    LLMCallId,
+    Role,
+    RoutingDecisionId,
+    StopReason,
+    Tier,
+    ToolCallId,
+    Usage,
+)
 from mpilot.model_policy import mentions_haiku
 from mpilot.models.domain import LLMCall, NonNegInt, PositiveInt
 from mpilot.tools.base import REGISTRY_TOOL_NAMES, ToolContext, ToolHost
@@ -134,17 +143,6 @@ def _sha256_json(value: Any) -> str:
     return hashlib.sha256(canon.encode()).hexdigest()
 
 
-class StopReason(StrEnum):
-    """Why a call ended normally. A usage or rate limit is not a stop reason: it raises
-    `UsageLimitError` (FR-21). Cancellation is `asyncio.CancelledError`."""
-
-    COMPLETED = "completed"  # final answer produced and schema-valid
-    SCHEMA_INVALID = "schema_invalid"  # final answer failed `output_schema` (router trigger 3)
-    MAX_TURNS = "max_turns"  # hit req.max_turns without a final answer
-    BUDGET_STOP = "budget_stop"  # the BudgetGuard ended the call (B2 mid-call stop)
-    TOOL_CALL_CAP = "tool_call_cap"  # a tool call after the cap refusal (§8.3, §9.1)
-
-
 class RoleCallResult(_Frozen):
     """Outcome of one role call, recorded as an `LLMCall` row (§8.1 item 6)."""
 
@@ -215,20 +213,46 @@ def schema_errors(schema: dict[str, Any], answer: dict[str, Any]) -> list[str]:
 
 
 def llm_call_from(
-    req: RoleCallRequest, res: RoleCallResult, *, runtime: str, api_equiv_usd: float = 0.0
+    req: RoleCallRequest,
+    res: RoleCallResult,
+    *,
+    runtime: str,
+    redact: Callable[[str], str],
+    api_equiv_usd: float = 0.0,
 ) -> LLMCall:
-    """The `LLMCall` row for a finished call (§8.1 item 6, FR-18). Run `check_result` first:
-    this records the model and effort the call *actually* ran at, and the tier the router
-    chose. It carries `limit_error=None`; a call that ended on a limit has no result."""
+    """The `LLMCall` row for a finished call (§8.1 item 6, FR-18, FR-21). Run `check_result`
+    first: this records the model and effort the call *actually* ran at, and the tier the
+    router chose. Step, attempt and parent come from `req.context`.
+
+    `redact` (A3, the gitleaks scan from P4-14) is applied to the canonical JSON of the final
+    answer (non-ASCII kept as is, so no escape hides a secret). The stored output is what the
+    next role is given, on a resume and without one alike, so it must stay usable: if the
+    redacted answer no longer fits `req.output_schema`, the row records SCHEMA_INVALID with
+    no output (the call was paid for, and router trigger 3 fires). A redactor that breaks
+    the JSON or returns a non-object is a bug: `ValueError`, nothing recorded. A call that
+    ended on a limit has no result and is recorded by the orchestrator with `limit_error`
+    set (P4-18)."""
+    stop, output = res.stop, None
+    if res.output is not None:
+        output = _redacted_output(res.output, redact)
+        if schema_errors(req.output_schema, output):
+            stop, output = StopReason.SCHEMA_INVALID, None
+    ctx = req.context
     return LLMCall(
         id=res.call_id,
-        run_id=req.context.run_id,
+        run_id=ctx.run_id,
         role=req.role,
+        step_id=ctx.step_id,
+        attempt_id=ctx.attempt_id,
+        parent_call_id=ctx.parent_call_id,
         runtime=runtime,
         model=res.model_id,
         tier=req.choice.tier,
         effort=res.effort_applied,
         routing_decision_id=req.routing_decision_id,
+        stop=stop,
+        turns=res.turns,
+        output=output,
         input_tokens=res.usage.input_tokens,
         output_tokens=res.usage.output_tokens,
         cache_read_tokens=res.usage.cache_read_tokens,
@@ -237,6 +261,17 @@ def llm_call_from(
         api_equiv_usd=api_equiv_usd,
         latency_ms=res.latency_ms,
     )
+
+
+def _redacted_output(output: dict[str, Any], redact: Callable[[str], str]) -> dict[str, Any]:
+    line = redact(json.dumps(output, sort_keys=True, separators=(",", ":"), ensure_ascii=False))
+    try:
+        redacted = json.loads(line)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"the redactor broke the answer's JSON: {exc}") from exc
+    if not isinstance(redacted, dict):
+        raise ValueError("the redactor turned the answer into something other than an object")
+    return redacted
 
 
 class RuntimeCapabilities(_Frozen):

@@ -144,8 +144,24 @@ def test_tool_spec_rejects_bad_names_and_descriptions() -> None:
 
 def test_tool_context_invariants() -> None:
     _ctx()
-    explorer = _ctx(role=Role.EXPLORER, caller=Role.CRITIC, step_id=None, step_type=None)
+    explorer = _ctx(
+        role=Role.EXPLORER,
+        caller=Role.CRITIC,
+        parent_call_id=LLMCallId("llm-critic"),
+        step_id=None,
+        step_type=None,
+    )
     assert explorer.caller is Role.CRITIC
+    with pytest.raises(ValidationError, match="parent_call_id is set exactly"):
+        _ctx(role=Role.EXPLORER, caller=Role.CRITIC, step_id=None, step_type=None)
+    with pytest.raises(ValidationError, match="parent_call_id is set exactly"):
+        _ctx(parent_call_id=LLMCallId("llm-0"))
+    with pytest.raises(ValidationError, match="its own parent"):
+        _ctx(
+            role=Role.EXPLORER,
+            caller=Role.EDITOR,
+            parent_call_id=LLMCallId("llm-1"),  # = role_call_id
+        )
     with pytest.raises(ValidationError, match="caller is set exactly"):
         _ctx(role=Role.EXPLORER)
     with pytest.raises(ValidationError, match="caller is set exactly"):

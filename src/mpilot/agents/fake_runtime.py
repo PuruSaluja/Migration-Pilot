@@ -38,7 +38,6 @@ from mpilot.agents.runtime import (
     RuntimeCapabilities,
     SelftestCheck,
     SelftestReport,
-    StopReason,
     schema_errors,
 )
 from mpilot.core.errors import (
@@ -48,7 +47,7 @@ from mpilot.core.errors import (
     ScriptDivergedError,
     UsageLimitError,
 )
-from mpilot.core.types import Effort, Role, Usage
+from mpilot.core.types import Effort, Role, StopReason, Usage
 from mpilot.models.domain import NonNegInt, PolicyDecision
 from mpilot.tools.base import HostDenyCode, ToolHost, ToolInvocation, mcp_name
 

@@ -29,10 +29,9 @@ from mpilot.agents.runtime import (
     RuntimeCapabilities,
     SelftestCheck,
     SelftestReport,
-    StopReason,
 )
 from mpilot.core.errors import BudgetExceededError
-from mpilot.core.types import Effort, Role, Tier, ToolCallId, Usage, new_tool_call_id
+from mpilot.core.types import Effort, Role, StopReason, Tier, ToolCallId, Usage, new_tool_call_id
 from mpilot.models.artifacts import TreeEntry, TreeSnapshot
 from mpilot.models.domain import PolicyDecision, ToolCall, Violation
 from mpilot.policy.gate import GateInput, PolicyCheck, TreeReader
@@ -184,6 +183,7 @@ class InMemoryToolHost:
             ToolCall(
                 id=call_id,
                 run_id=ctx.run_id,
+                role_call_id=ctx.role_call_id,
                 attempt_id=ctx.attempt_id,
                 role=ctx.role,
                 tool=tool,

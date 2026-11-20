@@ -12,10 +12,10 @@ from hypothesis import given
 from hypothesis import strategies as st
 from pydantic import ValidationError
 
-from mpilot.agents.router import StickyState
+from mpilot.agents.router import ExplorerFlag, RoutingCounters, StickyState
 from mpilot.agents.runtime import BudgetGuard
 from mpilot.core.errors import AttemptCapError, BudgetExceededError, IllegalTransition
-from mpilot.core.types import LLMCallId, RunId, RunStatus, StepId, ToolCallId, Usage
+from mpilot.core.types import AttemptId, LLMCallId, RunId, RunStatus, StepId, ToolCallId, Usage
 from mpilot.models.domain import (
     Budgets,
     Ecosystem,
@@ -278,12 +278,29 @@ def test_budget_state_counts_add_up() -> None:
         BudgetState(attempts_by_step={StepId("a"): 2}, attempts_total=3)
 
 
+_COUNTERS = RoutingCounters(
+    policy_denials=1,
+    schema_invalid=1,
+    last_confidence=0.6,
+    last_confidence_call=LLMCallId("llm-2"),
+    confidence_calls=frozenset({"llm-1", "llm-2"}),
+    explorer_questions=frozenset({"a" * 64}),
+    explorer_flags=frozenset({ExplorerFlag.NO_CITATIONS}),
+    pr_template_rejected=True,
+)
+
+
 def _rich(seq: int) -> Checkpoint:
     return _cp(
         seq=seq,
         step_id=StepId("s1"),
         attempt_n=2,
+        attempt_id=AttemptId("att-2"),
         sticky={"step/s1": StickyState(tier_escalated=True, trigger_fired=True)},
+        routing={"step/s1": _COUNTERS},
+        completed_calls=(LLMCallId("llm-2"),),
+        last_llm_call_id=LLMCallId("llm-2"),
+        restore_epoch=1,
         budget=BudgetState(
             spent=Spent(turns=10, input_tokens=1000),
             active_seconds=50.0,
@@ -357,6 +374,56 @@ def _rich(seq: int) -> Checkpoint:
         ({"integrity_failures": 0}, "integrity_failures"),
         ({"critic_revisions": 0}, "critic_revisions"),
         ({"run_id": RunId("other")}, "different runs"),
+        ({"routing": {}}, "routing counters for step/s1"),
+        ({"routing": {"step/s1": _COUNTERS.model_copy(update={"policy_denials": 0})}}, "routing"),
+        ({"routing": {"step/s1": _COUNTERS.model_copy(update={"schema_invalid": 0})}}, "routing"),
+        (
+            {"routing": {"step/s1": _COUNTERS.model_copy(update={"explorer_questions": set()})}},
+            "routing",
+        ),
+        (
+            {"routing": {"step/s1": _COUNTERS.model_copy(update={"explorer_flags": set()})}},
+            "routing",
+        ),
+        (
+            {"routing": {"step/s1": _COUNTERS.model_copy(update={"pr_template_rejected": False})}},
+            "routing",
+        ),
+        (  # the same call's confidence rewritten
+            {"routing": {"step/s1": _COUNTERS.model_copy(update={"last_confidence": 0.95})}},
+            "routing",
+        ),
+        (  # a recorded confidence cleared
+            {
+                "routing": {
+                    "step/s1": RoutingCounters(
+                        **_COUNTERS.model_dump(exclude={"last_confidence", "last_confidence_call"})
+                    )
+                }
+            },
+            "routing",
+        ),
+        ({"attempt_id": AttemptId("att-new")}, "attempt 2 changed its id"),
+        ({"attempt_n": 1, "attempt_id": AttemptId("att-1")}, "attempt 1 is not new"),
+        ({"last_tool_call_id": None}, "last_tool_call_id was cleared"),
+        ({"last_llm_call_id": None}, "last_llm_call_id was cleared"),
+        ({"restore_epoch": 0}, "restore_epoch was lowered"),
+        (  # switching back to an older call's (higher) confidence
+            {
+                "routing": {
+                    "step/s1": _COUNTERS.model_copy(
+                        update={"last_confidence": 0.95, "last_confidence_call": "llm-1"}
+                    )
+                }
+            },
+            "routing",
+        ),
+        (
+            {"routing": {"step/s1": _COUNTERS.model_copy(update={"confidence_calls": {"llm-2"}})}},
+            "routing",
+        ),
+        ({"completed_calls": ()}, "completed role call"),
+        ({"completed_calls": (LLMCallId("llm-other"),)}, "completed role call"),
     ],
 )
 def test_a_checkpoint_can_never_undo_the_previous_one(

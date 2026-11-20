@@ -1,7 +1,7 @@
 """Initial schema: a table for every SPEC §12 model, plus checkpoints, final verification,
 migration notes and the escalation report (P1-09; amended at the P1-12 gate, before any
-database existed outside tests: attempt numbering and commit-bound integrity reports and
-Critic verdicts).
+database existed outside tests: attempt numbering, commit-bound integrity reports and
+Critic verdicts, and the resume fields of tool and role calls).
 
 Generated with Alembic autogenerate from `mpilot.models.tables`, then frozen: it imports no
 application code, so later changes to `tables.py` never alter what this revision does. From
@@ -356,6 +356,7 @@ def upgrade() -> None:
         "tool_calls",
         sa.Column("run_id", sa.String(), nullable=False),
         sa.Column("id", sa.String(), nullable=False),
+        sa.Column("role_call_id", sa.String(), nullable=False),
         sa.Column("attempt_id", sa.String(), nullable=True),
         sa.Column("role", sa.String(), nullable=False),
         sa.Column("tool", sa.String(), nullable=False),
@@ -381,6 +382,7 @@ def upgrade() -> None:
     )
     with op.batch_alter_table("tool_calls", schema=None) as batch_op:
         batch_op.create_index("ix_tool_calls_attempt_id", ["attempt_id"], unique=False)
+        batch_op.create_index("ix_tool_calls_role_call_id", ["role_call_id"], unique=False)
         batch_op.create_index("ix_tool_calls_run_id_seq", ["run_id", "seq"], unique=False)
 
     op.create_table(
@@ -388,6 +390,9 @@ def upgrade() -> None:
         sa.Column("run_id", sa.String(), nullable=False),
         sa.Column("id", sa.String(), nullable=False),
         sa.Column("role", sa.String(), nullable=False),
+        sa.Column("step_id", sa.String(), nullable=True),
+        sa.Column("attempt_id", sa.String(), nullable=True),
+        sa.Column("parent_call_id", sa.String(), nullable=True),
         sa.Column("runtime", sa.String(), nullable=False),
         sa.Column("model", sa.String(), nullable=False),
         sa.Column("tier", sa.String(), nullable=False),
@@ -400,6 +405,8 @@ def upgrade() -> None:
         sa.Column("thinking", sa.Boolean(), nullable=False),
         sa.Column("api_equiv_usd", sa.Float(), nullable=False),
         sa.Column("latency_ms", sa.Integer(), nullable=False),
+        sa.Column("stop", sa.String(), nullable=True),
+        sa.Column("turns", sa.Integer(), nullable=False),
         sa.Column("limit_error", sa.Text(), nullable=True),
         sa.Column("doc", JSON_DOC, nullable=False),
         sa.Column("seq", sa.Integer(), autoincrement=True, nullable=False),
@@ -414,6 +421,22 @@ def upgrade() -> None:
             "input_tokens >= 0 AND output_tokens >= 0 AND cache_read_tokens >= 0 AND cache_write_tokens >= 0 AND api_equiv_usd >= 0 AND latency_ms >= 0",
             name=op.f("ck_llm_calls_usage_nonneg"),
         ),
+        sa.CheckConstraint("turns >= 0", name=op.f("ck_llm_calls_turns_nonneg")),
+        sa.CheckConstraint(
+            "stop IS NULL OR stop IN ('completed', 'schema_invalid', 'max_turns', 'budget_stop', 'tool_call_cap')",
+            name=op.f("ck_llm_calls_stop_known"),
+        ),
+        sa.CheckConstraint(
+            "(stop IS NULL) = (limit_error IS NOT NULL)", name=op.f("ck_llm_calls_stop_xor_limit")
+        ),
+        sa.CheckConstraint(
+            "(parent_call_id IS NOT NULL) = (role = 'explorer')",
+            name=op.f("ck_llm_calls_parent_iff_explorer"),
+        ),
+        sa.CheckConstraint(
+            "attempt_id IS NULL OR step_id IS NOT NULL",
+            name=op.f("ck_llm_calls_attempt_needs_step"),
+        ),
         sa.ForeignKeyConstraint(
             ["routing_decision_id"],
             ["routing_decisions.id"],
@@ -427,6 +450,7 @@ def upgrade() -> None:
         sa.UniqueConstraint("id", name=op.f("uq_llm_calls_id")),
     )
     with op.batch_alter_table("llm_calls", schema=None) as batch_op:
+        batch_op.create_index("ix_llm_calls_attempt_id", ["attempt_id"], unique=False)
         batch_op.create_index(
             "ix_llm_calls_routing_decision_id", ["routing_decision_id"], unique=False
         )
@@ -437,10 +461,12 @@ def downgrade() -> None:
     with op.batch_alter_table("llm_calls", schema=None) as batch_op:
         batch_op.drop_index("ix_llm_calls_run_id_seq")
         batch_op.drop_index("ix_llm_calls_routing_decision_id")
+        batch_op.drop_index("ix_llm_calls_attempt_id")
 
     op.drop_table("llm_calls")
     with op.batch_alter_table("tool_calls", schema=None) as batch_op:
         batch_op.drop_index("ix_tool_calls_run_id_seq")
+        batch_op.drop_index("ix_tool_calls_role_call_id")
         batch_op.drop_index("ix_tool_calls_attempt_id")
 
     op.drop_table("tool_calls")

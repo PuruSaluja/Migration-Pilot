@@ -148,6 +148,7 @@ def _append_row(row: AppendRow, at: datetime) -> Base:
             return DbToolCall(
                 **base,
                 id=row.id,
+                role_call_id=row.role_call_id,
                 attempt_id=row.attempt_id,
                 role=row.role.value,
                 tool=row.tool,
@@ -161,6 +162,9 @@ def _append_row(row: AppendRow, at: datetime) -> Base:
                 **base,
                 id=row.id,
                 role=row.role.value,
+                step_id=row.step_id,
+                attempt_id=row.attempt_id,
+                parent_call_id=row.parent_call_id,
                 runtime=row.runtime,
                 model=row.model,
                 tier=row.tier.value,
@@ -173,6 +177,8 @@ def _append_row(row: AppendRow, at: datetime) -> Base:
                 thinking=row.thinking,
                 api_equiv_usd=row.api_equiv_usd,
                 latency_ms=row.latency_ms,
+                stop=_value(row.stop),
+                turns=row.turns,
                 limit_error=row.limit_error,
                 doc=_doc(row),
             )

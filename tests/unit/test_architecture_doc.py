@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 from mpilot.agents import cassette, fake_runtime, router, runtime
+from mpilot.core import types as core_types
 from mpilot.knowledge import base as kb
 from mpilot.models import artifacts, state
 from mpilot.orchestrator import base as ob
@@ -60,11 +61,12 @@ VALUE_TYPES: list[type] = [
     runtime.ModelChoice,
     runtime.RoleCallRequest,
     runtime.RoleCallResult,
-    runtime.StopReason,
+    core_types.StopReason,  # moved from agents/runtime.py in P1-12b
     runtime.RuntimeCapabilities,
     runtime.SelftestCheck,
     runtime.SelftestReport,
     router.StickyState,
+    router.RoutingCounters,  # P1-12b
     router.EscalationTrigger,
     router.ExplorerFlag,
     router.RoutingContext,
@@ -111,6 +113,7 @@ VALUE_TYPES: list[type] = [
     state.InFlightCall,
     state.BudgetState,
     state.Checkpoint,
+    state.ResumePoint,  # P1-12b
     kb.DetectOverrides,
     kb.RegistryInfo,
     kb.ChangelogChunk,
@@ -150,6 +153,9 @@ FUNCTIONS = [
     "play",
     "write_cassette",
     "read_cassette",
+    "explorer_question_hash",  # P1-12b
+    "resume_point",
+    "latest_output",
 ]
 
 
@@ -193,6 +199,7 @@ FIELD_CHECKED: list[type] = [
     runtime.RoleCallResult,
     runtime.RuntimeCapabilities,
     router.StickyState,
+    router.RoutingCounters,
     router.RoutingContext,
     router.RoutingPolicies,
     router.RouteOutcome,
@@ -209,6 +216,7 @@ FIELD_CHECKED: list[type] = [
     ob.CallEstimate,
     state.BudgetState,
     state.Checkpoint,
+    state.ResumePoint,
 ]
 
 

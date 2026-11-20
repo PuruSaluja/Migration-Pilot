@@ -35,6 +35,7 @@ from mpilot.core.types import (
     RunStatus,
     StepId,
     StepType,
+    StopReason,
     Tier,
     ToolCallId,
 )
@@ -332,6 +333,10 @@ class Attempt(DomainModel):
 class ToolCall(DomainModel):
     id: ToolCallId
     run_id: RunId
+    #: The role call that made it (`ToolContext.role_call_id`, = `LLMCall.id`). Written while
+    #: that call runs, so before its LLMCall row; a crash mid-call leaves no row to join, and
+    #: the checkpoint's `in_flight` names the call instead (FR-18 replay, FR-21, §8.5).
+    role_call_id: LLMCallId
     attempt_id: AttemptId | None = None
     role: Role
     tool: str
@@ -357,14 +362,28 @@ def _reject_opus_medium(tier: Tier, effort: Effort) -> None:
 
 
 class LLMCall(DomainModel):
+    """One role call: written once it finished (`stop`) or ended on a usage or rate limit
+    (`limit_error`), never while it runs. A resume reads these rows to skip finished calls
+    and take their outputs (FR-21: completed role calls are never repeated)."""
+
     id: LLMCallId
     run_id: RunId
     role: Role
+    step_id: StepId | None = None  # the plan step it ran in (Editor, Diagnoser, nested Explorer)
+    attempt_id: AttemptId | None = None  # the repair attempt it ran in, if any
+    #: Set exactly for Explorer calls: the role call whose `explore` ran it (§8.5).
+    parent_call_id: LLMCallId | None = None
     runtime: str  # e.g. "agent_sdk", "fake", "cassette"
     model: str  # the model ID that actually ran
     tier: Tier
     effort: Effort  # the effort the call actually ran at, never just the requested one
     routing_decision_id: RoutingDecisionId
+    stop: StopReason | None  # how it ended; None exactly when `limit_error` is set
+    turns: NonNegInt  # model turns, the crossing one included
+    #: The final answer, redacted (A3) and still valid under the role's output schema; set
+    #: exactly when `stop` is COMPLETED. This is what the next role is given, on a resume and
+    #: without one alike (Diagnosis hypotheses -> Editor, AnalysisReport -> Planner).
+    output: dict[str, Any] | None = None
     input_tokens: NonNegInt
     output_tokens: NonNegInt
     cache_read_tokens: NonNegInt = 0
@@ -379,7 +398,22 @@ class LLMCall(DomainModel):
         if "haiku" in self.model.lower():
             raise ValueError("Haiku is never used (NFR-12)")
         _reject_opus_medium(self.tier, self.effort)
+        if (self.stop is None) == (self.limit_error is None):
+            raise ValueError("exactly one of stop and limit_error is set")
+        if (self.output is not None) != (self.stop is StopReason.COMPLETED):
+            raise ValueError("output is present exactly when stop == completed")
+        if (self.parent_call_id is not None) != (self.role is Role.EXPLORER):
+            raise ValueError("parent_call_id is set exactly for Explorer calls (§8.5)")
+        if self.parent_call_id == self.id:
+            raise ValueError("a role call cannot be its own parent")
+        if self.attempt_id is not None and self.step_id is None:
+            raise ValueError("attempt_id needs a step_id")
         return self
+
+    @property
+    def finished(self) -> bool:
+        """Ended on its own (any `stop`), as opposed to on a limit: never re-run (FR-21)."""
+        return self.stop is not None
 
 
 class RoutingDecision(DomainModel):

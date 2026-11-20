@@ -20,10 +20,18 @@ from sqlalchemy import Engine, create_engine, event, select, text
 from sqlalchemy.orm import Session
 from test_domain_models import NOW, RUN, SAMPLES
 
-from mpilot.agents.router import StickyState
+from mpilot.agents.router import RoutingCounters, StickyState
 from mpilot.core.clock import FakeClock
 from mpilot.core.errors import StoreError
-from mpilot.core.types import FailureCategory, LLMCallId, RunId, RunStatus, StepId, ToolCallId
+from mpilot.core.types import (
+    AttemptId,
+    FailureCategory,
+    LLMCallId,
+    RunId,
+    RunStatus,
+    StepId,
+    ToolCallId,
+)
 from mpilot.models import artifacts as art
 from mpilot.models import domain as d
 from mpilot.models.migrate import head_revision
@@ -64,7 +72,18 @@ def checkpoint(seq: int, **update: Any) -> Checkpoint:
         "status": RunStatus.REPAIR_LOOP,
         "step_id": StepId("s1"),
         "attempt_n": 2,
+        "attempt_id": AttemptId("att-2"),
         "sticky": {"step/s1": StickyState(tier_escalated=True, trigger_fired=True)},
+        "routing": {
+            "step/s1": RoutingCounters(
+                policy_denials=1,
+                last_confidence=0.6,
+                last_confidence_call=LLMCallId("llm-2"),
+                confidence_calls=frozenset({"llm-2"}),
+                explorer_questions=frozenset({"b" * 64}),
+            )
+        },
+        "completed_calls": (LLMCallId("llm-2"),),
         "budget": BudgetState(
             spent=d.Spent(turns=10, input_tokens=1000),
             active_seconds=50.0,
@@ -292,6 +311,9 @@ def test_checkpoints_move_forward_only(store: RunStore) -> None:
         ({"failure_history": ()}, "failure history"),
         ({"integrity_failures": 0}, "integrity_failures"),
         ({"critic_revisions": 0}, "critic_revisions"),
+        ({"routing": {"step/s1": RoutingCounters()}}, "routing counters"),
+        ({"attempt_id": AttemptId("att-other")}, "changed its id"),
+        ({"completed_calls": ()}, "completed role call"),
     ],
 )
 def test_a_checkpoint_that_undoes_anything_is_refused_and_changes_nothing(
@@ -660,6 +682,7 @@ def _tool_row(id: str) -> dict[str, Any]:
         "run_id": m.run_id,
         "recorded_at": NOW,
         "id": m.id,
+        "role_call_id": m.role_call_id,
         "attempt_id": m.attempt_id,
         "role": m.role.value,
         "tool": m.tool,

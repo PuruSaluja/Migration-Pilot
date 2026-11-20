@@ -61,6 +61,9 @@ class RunStatus(StrEnum):  # SPEC §7.4, one member per state plus terminal END_
     END_CANCELLED                                                  # C6 [SPEC]
 class FailureCategory(StrEnum): ...  # exactly the entries of SPEC §14.5 (17 in v1.4, incl. CANCELLED)
 class Outcome(StrEnum): IMPROVED; SAME; REGRESSED; GREEN          # C1
+class StopReason(StrEnum): COMPLETED; SCHEMA_INVALID; MAX_TURNS; BUDGET_STOP; TOOL_CALL_CAP
+    # §12 LLMCall.stop. Usage/rate limit raises UsageLimitError instead (row: limit_error, stop None);
+    # cancellation is asyncio.CancelledError. Lives here so models/domain.py can use it
 class NetworkMode(StrEnum): NONE = "none"; REGISTRY = "registry"
 class ExitCode(IntEnum): SUCCESS=0; FAILED=1; INPUT_ERROR=2; BASELINE_RED=3; BUDGET_EXCEEDED=4; PAUSED=5
 def exit_code_for(status: RunStatus) -> ExitCode: ...              # C6 matrix: every terminal state + PAUSED_LIMIT (5);
@@ -94,9 +97,6 @@ class RoleCallRequest(BaseModel, frozen=True):       # serializable: cassettes k
     call_id -> LLMCallId; role -> Role
     def request_hash(self) -> str: ...               # content only: random run/call/step/attempt/
                                                      # routing IDs excluded, so a replay matches (B6)
-
-class StopReason(StrEnum): COMPLETED; SCHEMA_INVALID; MAX_TURNS; BUDGET_STOP; TOOL_CALL_CAP
-    # usage/rate limit raises UsageLimitError instead; cancellation is asyncio.CancelledError
 
 class RoleCallResult(BaseModel, frozen=True):
     call_id: LLMCallId; stop: StopReason
@@ -143,7 +143,11 @@ Helpers in `agents/runtime.py` every runtime shares:
 
 ```python
 def schema_errors(schema: dict, answer: dict) -> list[str]: ...    # JSON Schema 2020-12; non-empty => SCHEMA_INVALID
-def llm_call_from(req: RoleCallRequest, res: RoleCallResult, *, runtime: str, api_equiv_usd: float = 0.0) -> LLMCall: ...
+def llm_call_from(req: RoleCallRequest, res: RoleCallResult, *, runtime: str,
+                  redact: Callable[[str], str], api_equiv_usd: float = 0.0) -> LLMCall: ...
+    # step_id/attempt_id/parent_call_id from req.context; stop, turns, and the final answer as
+    # output: redact() runs on its canonical JSON, and the result must still fit output_schema
+    # (else ValueError, nothing recorded). The next role is always given this stored output.
 RoleCallRequest.content() -> dict          # request_hash() hashes this; part_hashes() hashes each key, for cassette diffs
 ```
 
@@ -200,6 +204,24 @@ class StickyState(BaseModel, frozen=True):
     tier_escalated: bool = False; effort_escalated: bool = False
     trigger_fired: bool = False                      # any trigger 1-8 in scope => no medium afterwards
     def covers(self, other: StickyState) -> bool: ...   # no de-escalation; any -> bool
+
+class RoutingCounters(BaseModel, frozen=True):      # per StickyScope in Checkpoint.routing (FR-21)
+    policy_denials: int; schema_invalid: int         # trigger 3 inputs; only grow in scope
+    last_confidence: Confidence | None; last_confidence_call: LLMCallId | None   # trigger 5; set together
+    confidence_calls: frozenset[str]                 # every call folded in: a change of call must be new
+    explorer_questions: frozenset[str]               # explorer_question_hash of every question asked
+    explorer_flags: frozenset[ExplorerFlag]; pr_template_rejected: bool   # effort-escalation inputs
+    def covers(self, other: RoutingCounters) -> bool: ...   # nothing lowered or dropped; one call's
+                                                            # confidence never rewritten, never a switch back
+    def after_tool_call(self, call: ToolCall) -> RoutingCounters: ...   # +1 denial if denied
+    def after_call(self, call: LLMCall) -> RoutingCounters: ...         # schema_invalid or confidence
+    def asked(self, question_hash: str) -> RoutingCounters: ...         # a repeat adds REPEATED_QUESTION
+    def flagged(self, *flags: ExplorerFlag) -> RoutingCounters: ...
+    def pr_rejected(self) -> RoutingCounters: ...
+    def apply(self, ctx: RoutingContext) -> RoutingContext: ...         # fills the ctx fields above, only
+                                                                        # towards opus/high (min confidence)
+def explorer_question_hash(caller: Role, question: str, scope: str | None = None) -> str: ...
+    # SHA-256 of caller + NFKC/casefold/whitespace-normalized question and scope
 
 class ExplorerFlag(StrEnum): NO_CITATIONS; OVER_CAP; REPEATED_QUESTION
 
@@ -273,6 +295,7 @@ class ToolSpec:                                      # name must be in the regis
 
 class ToolContext(BaseModel, frozen=True):           # built by the orchestrator, never from model output
     run_id: RunId; role_call_id: LLMCallId; role: Role; caller: Role | None
+    parent_call_id: LLMCallId | None                 # set exactly with caller: the call that ran explore
     step_id: StepId | None; step_type: StepType | None; attempt_id: AttemptId | None
     step_target_files: frozenset[str]                # test_touch: the only test files writable (H3)
     flag_justifications: Mapping[str, str]           # H8 (A11)
@@ -571,15 +594,61 @@ class BudgetState(BaseModel, frozen=True):
 class Checkpoint(BaseModel, frozen=True):            # after every tool call (NFR-4)
     run_id: RunId; seq: int; at: datetime; status: RunStatus; paused_at_state: RunStatus | None
     step_id: StepId | None; attempt_n: int | None      # run-wide Attempt.n (= attempt ref n)
+    attempt_id: AttemptId | None                     # minted at attempt start; set exactly with attempt_n
     sticky: dict[str, StickyState]                   # sticky_scope -> state
+    routing: dict[str, RoutingCounters]              # sticky_scope -> routing inputs from history
     budget: BudgetState; failure_history: tuple[FailureHistoryEntry, ...]
-    last_tool_call_id: ToolCallId | None; in_flight: InFlightCall | None
+    last_tool_call_id: ToolCallId | None; last_llm_call_id: LLMCallId | None   # rows folded in; never cleared
+    completed_calls: tuple[LLMCallId, ...]           # top-level calls finished in this unit, in order
+    restore_epoch: int                               # +1 per crash restore (§10.1)
+    in_flight: InFlightCall | None
     latest_snapshot_ref: str | None
     export_dir: str | None; export_digest: str | None   # both required when paused
     integrity_failures: int; critic_revisions: int   # §7.4 "once"; FR-15 at most one revise
+    unit_key -> (RunStatus, StepId | None, int | None, int)   # (paused_at_state or status, step, attempt_n, epoch)
+    scope -> str                                     # sticky_scope of the unit, never phase/PAUSED_LIMIT
+    # attempt_n == budget.attempts_total while set; may not name its own attempt snapshot ref
     def covers(self, previous: Checkpoint) -> list[str]: ...     # nothing may go backwards (B5): sticky
-        # flags, attempt counters, spent, active time, failure-history attempts and tried hypotheses
+        # flags, routing counters, attempt counters, spent, active time, failure-history attempts and
+        # tried hypotheses, row marks, restore_epoch; a set attempt_n is the previous one (same id) or
+        # a new attempt (above previous attempts_total, new id), even across a gap with no attempt;
+        # within one unit_key completed_calls only grows at the end; a crash restore only cuts it back
+
+TREE_WRITER_ROLES = {EDITOR, B2_SINGLE_SHOT, B3_GENERIC}   # calls a crash restore undoes (§10.1)
+class ResumePoint(BaseModel, frozen=True):
+    checkpoints: tuple[Checkpoint, ...]              # 1-2, written first: reconciliation, then (crash) the restore
+    completed: tuple[LLMCall, ...]                   # never re-run; their outputs feed what comes next
+    restart: InFlightCall | None                     # after a pause only: restart with its summary (FR-21)
+    undone: tuple[LLMCall, ...]                      # after a crash only: from the unit's first tree
+                                                     # writer on, re-run (the snapshot restore undid them)
+def resume_point(cp: Checkpoint, calls: Sequence[LLMCall], tool_calls: Sequence[ToolCall], *, at: datetime) -> ResumePoint: ...
+    # Reconcile: rows after the checkpoint's marks (a crash between a row and its checkpoint) are
+    # folded into routing[cp.scope] and finished top-level ones promoted to completed; the in-flight
+    # call gains its newer tool calls. Pause: the export is the state after the last tool call, so
+    # all finished calls are kept. Crash: the workspace goes back to latest_snapshot_ref, which
+    # predates the unit, so the restore checkpoint bumps restore_epoch, keeps only the calls before
+    # the first tree writer and clears in_flight (re-issued without a summary).
+    # ValueError if the rows contradict cp (missing, limit, nested, other step/attempt, mark without row)
+def latest_output(calls: Sequence[LLMCall], role: Role) -> dict[str, Any] | None: ...
+    # last COMPLETED top-level call's output: the AnalysisReport's home for the Planner (§8.2)
 ```
+
+**Resume protocol (FR-21, P1-12b).** For each role call: a checkpoint naming it `in_flight`
+before the runtime is invoked; when it ends, its `LLMCall` row (finished: `stop` set; or
+limit-interrupted: `limit_error` set), then a checkpoint that folds the row in
+(`completed_calls`, routing counters, `last_llm_call_id`), or after a limit the paused checkpoint
+that keeps it in flight. Tool calls likewise (row, then a checkpoint with `last_tool_call_id`).
+A resume writes `resume_point(...).checkpoints` before routing anything. Phase snapshots are
+taken only as their phase ends, like attempt snapshots, so a crash restore never keeps a unit's
+own edits. Reconciling the BudgetManager with a promoted call's usage (`record_call`) is the
+driver's (P4-16/P4-18); until then its guard charges stay in `in_flight_*` and still count. The next
+role is always given the stored `LLMCall.output`, never the in-memory result, so a resumed run
+and an uninterrupted one see the same input. After every tool call and role call the checkpoint
+folds the row into `routing[sticky_scope(...)]` (`after_tool_call`, `after_call`), and routing
+builds its context with `RoutingCounters.apply`, so one denial before a crash and one after still
+fire trigger 3. `ToolCall.role_call_id` joins tool calls to their role call (FR-18 replay and
+span nesting, §8.5 "the Critic cites files it read itself"); `LLMCall.parent_call_id` nests an
+Explorer call under the call that ran `explore`.
 
 ### Tables (`models/tables.py`, P1-09)
 
@@ -595,7 +664,7 @@ their parent's `doc`.
 | `baselines`, `plans`, `pull_requests`, `escalation_reports` | `Baseline`, `Plan` (+ nested `Step`), `PullRequest`, `EscalationReport` (FR-17; every field is a column; P5-14 fixes the shape of `data`) | one per run, upserted |
 | `checkpoints` | `Checkpoint`, PK `(run_id, seq)` | append-only |
 | `attempts` | `Attempt` (+ nested `Diagnosis`; `signature`, `category` copied out); `UNIQUE(run_id, n)` (`n` names the attempt ref) and `UNIQUE(run_id, step_id, n_in_step)` | append-only |
-| `tool_calls`, `routing_decisions`, `llm_calls` | `ToolCall`, `RoutingDecision`, `LLMCall` (FK to its decision) | append-only |
+| `tool_calls`, `routing_decisions`, `llm_calls` | `ToolCall` (`role_call_id` indexed, no FK: the call's row comes later), `RoutingDecision`, `LLMCall` (FK to its decision; `step_id`, `attempt_id`, `parent_call_id`, `stop`, `turns` as columns, `output` only in `doc`) | append-only |
 | `test_results`, `final_verifications`, `integrity_reports`, `critic_verdicts` | `TestResult`, `FinalVerification`, `IntegrityReport`, `CriticVerdict` (the last three with a `mirror_commit` column: the commit judged) | append-only |
 | `migration_notes` | `MigrationNote`, one row per `write_note` call; the current note for a key is its highest `seq` | append-only |
 | `eval_results` | `EvalResult` (bench rows, no run FK) | append-only |
@@ -603,14 +672,15 @@ their parent's `doc`.
 Append-only tables have `seq` (insertion order) and `recorded_at` (the store's `Clock`, UTC). Child
 tables cascade from `runs`. NFR-12 is repeated as CHECK constraints (tier opus/sonnet, effort
 medium/high, never Opus at medium, no "haiku" in a model name), and so are the model invariants
-that fit in SQL (deny reason iff denied, paused state iff `PAUSED_LIMIT`, non-negative counts).
+that fit in SQL (deny reason iff denied, paused state iff `PAUSED_LIMIT`, non-negative counts,
+`stop` iff no `limit_error`, `parent_call_id` iff Explorer, an attempt only inside a step).
 Types are portable: `JSON` (JSONB on Postgres), timezone-aware UTC datetimes through `UtcDateTime`,
 named constraints. SQLite needs `enable_sqlite_fks(engine)` for foreign keys; P1-10 calls it.
 
 `models/migrate.py` runs the packaged Alembic migrations from code (`upgrade`, `downgrade`, the
 same on an open connection, and `upgrade_sql`/`downgrade_sql` that print the SQL for any dialect
 without a server). `0001_initial_schema` is generated, then frozen (it imports no app code). It was
-amended once, at the Phase 1 gate, before any database existed outside tests; from the gate on,
+amended at the Phase 1 gate (P1-12a, P1-12b), before any database existed outside tests; from the gate on,
 every schema change is a new revision. A test compares the migrated schema to `tables.py`, so
 changing a table without a new revision fails the build.
 

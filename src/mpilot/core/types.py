@@ -128,6 +128,18 @@ class Outcome(StrEnum):
     GREEN = "green"
 
 
+class StopReason(StrEnum):
+    """Why a role call ended normally (§12 `LLMCall.stop`). A usage or rate limit is not a
+    stop reason: it raises `UsageLimitError` and the row records `limit_error` (FR-21).
+    Cancellation is `asyncio.CancelledError`."""
+
+    COMPLETED = "completed"  # final answer produced and schema-valid
+    SCHEMA_INVALID = "schema_invalid"  # final answer failed `output_schema` (router trigger 3)
+    MAX_TURNS = "max_turns"  # hit req.max_turns without a final answer
+    BUDGET_STOP = "budget_stop"  # the BudgetGuard ended the call (B2 mid-call stop)
+    TOOL_CALL_CAP = "tool_call_cap"  # a tool call after the cap refusal (§8.3, §9.1)
+
+
 class NetworkMode(StrEnum):
     """Sandbox container network mode (§9.3)."""
 

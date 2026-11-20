@@ -98,3 +98,8 @@ def req(**kw: Any) -> RoleCallRequest:
 
 def guard(max_turns: int = 1000) -> TurnLimitGuard:
     return TurnLimitGuard(max_turns)
+
+
+def no_redact(line: str) -> str:
+    """Identity redactor for tests whose answers hold no secrets (A3 is P4-14)."""
+    return line

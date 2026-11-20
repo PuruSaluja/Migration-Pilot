@@ -106,6 +106,9 @@ def llm_row(**over: Any) -> DbLLMCall:
         "run_id": m.run_id,
         "id": m.id,
         "role": m.role.value,
+        "step_id": m.step_id,
+        "attempt_id": m.attempt_id,
+        "parent_call_id": m.parent_call_id,
         "runtime": m.runtime,
         "model": m.model,
         "tier": m.tier.value,
@@ -118,6 +121,8 @@ def llm_row(**over: Any) -> DbLLMCall:
         "thinking": m.thinking,
         "api_equiv_usd": m.api_equiv_usd,
         "latency_ms": m.latency_ms,
+        "stop": m.stop.value if m.stop else None,
+        "turns": m.turns,
         "limit_error": m.limit_error,
         "doc": _doc(m),
         "recorded_at": NOW,
@@ -131,6 +136,7 @@ def tool_row(**over: Any) -> DbToolCall:
     values: dict[str, Any] = {
         "run_id": m.run_id,
         "id": m.id,
+        "role_call_id": m.role_call_id,
         "attempt_id": m.attempt_id,
         "role": m.role.value,
         "tool": m.tool,
@@ -394,6 +400,42 @@ def test_negative_usage_is_refused(engine: Engine) -> None:
     with_decision(engine)
     with pytest.raises(IntegrityError):
         commit(engine, llm_row(input_tokens=-1))
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        {"turns": -1},
+        {"stop": "crashed"},  # not a StopReason
+        {"stop": None},  # neither a stop nor a limit error
+        {"limit_error": "usage limit"},  # both
+        {"role": "explorer"},  # an Explorer call without its parent
+        {"parent_call_id": "llm-0"},  # a parent on a non-Explorer call
+        {"step_id": None},  # an attempt outside a step
+    ],
+)
+def test_llm_calls_refuse_rows_a_resume_could_misread(engine: Engine, bad: dict[str, Any]) -> None:
+    """P1-12b: the resume fields are constrained in SQL too."""
+    with_decision(engine)
+    with pytest.raises(IntegrityError):
+        commit(engine, llm_row(**bad))
+
+
+def test_llm_call_resume_shapes_are_accepted(engine: Engine) -> None:
+    with_decision(engine)
+    commit(
+        engine,
+        llm_row(id="l-limit", stop=None, limit_error="usage limit"),
+        llm_row(id="l-explore", role="explorer", parent_call_id="llm-1"),
+        llm_row(id="l-phase", step_id=None, attempt_id=None),
+    )
+    assert count(engine, DbLLMCall) == 3
+
+
+def test_a_tool_call_needs_its_role_call(engine: Engine) -> None:
+    with_run(engine)
+    with pytest.raises(IntegrityError):
+        commit(engine, tool_row(role_call_id=None))
 
 
 # ---------------------------------------------------------------- other constraints

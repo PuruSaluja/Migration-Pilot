@@ -10,7 +10,7 @@ from typing import Any
 import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
-from runtime_helpers import ANSWER, OPUS, RUN, SONNET, ctx, guard, host, req
+from runtime_helpers import ANSWER, OPUS, RUN, SONNET, ctx, guard, host, no_redact, req
 from test_domain_models import SAMPLES
 
 from mpilot.agents.fake_runtime import (
@@ -461,8 +461,14 @@ def test_llm_call_rows_record_what_actually_ran() -> None:
     result, _, _ = call_once(
         ScriptedCall(turns=(ScriptedTurn(final=ANSWER, usage=Usage(7, 3, 11, 5)),), latency_ms=42)
     )
-    row = llm_call_from(request, result, runtime="fake", api_equiv_usd=0.25)
+    row = llm_call_from(request, result, runtime="fake", redact=no_redact, api_equiv_usd=0.25)
     assert (row.id, row.run_id, row.role) == (request.call_id, RUN, Role.EDITOR)
+    assert (row.step_id, row.attempt_id, row.parent_call_id) == (
+        request.context.step_id,
+        request.context.attempt_id,
+        None,
+    )
+    assert (row.stop, row.turns, row.output) == (StopReason.COMPLETED, 1, ANSWER)
     assert (row.runtime, row.model, row.tier, row.effort) == ("fake", OPUS, "opus", "high")
     assert (row.input_tokens, row.output_tokens) == (7, 3)
     assert (row.cache_read_tokens, row.cache_write_tokens) == (11, 5)
@@ -497,7 +503,7 @@ def test_a_scripted_run_writes_tool_call_and_llm_call_rows_to_the_store(tmp_path
         decision = SAMPLES[d.RoutingDecision]()
         assert isinstance(decision, d.RoutingDecision)
         store.append(decision.model_copy(update={"id": RoutingDecisionId("rd-1"), "run_id": RUN}))
-        store.append(llm_call_from(request, result, runtime=runtime.name))
+        store.append(llm_call_from(request, result, runtime=runtime.name, redact=no_redact))
         for row in h.calls:  # what the real ToolHost (P4-07) persists
             store.append(row)
 
@@ -511,6 +517,7 @@ def test_a_scripted_run_writes_tool_call_and_llm_call_rows_to_the_store(tmp_path
             ("Bash", "deny"),
         ]
         assert tool_rows[1].deny_reason
+        assert {r.role_call_id for r in tool_rows} == {llm.id}  # joinable to their role call
     finally:
         store.close()
 

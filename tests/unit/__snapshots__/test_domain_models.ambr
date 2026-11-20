@@ -1375,6 +1375,22 @@
           'title': 'Role',
           'type': 'string',
         }),
+        'StopReason': dict({
+          'description': '''
+            Why a role call ended normally (§12 `LLMCall.stop`). A usage or rate limit is not a
+            stop reason: it raises `UsageLimitError` and the row records `limit_error` (FR-21).
+            Cancellation is `asyncio.CancelledError`.
+          ''',
+          'enum': list([
+            'completed',
+            'schema_invalid',
+            'max_turns',
+            'budget_stop',
+            'tool_call_cap',
+          ]),
+          'title': 'StopReason',
+          'type': 'string',
+        }),
         'Tier': dict({
           'description': 'Model tier (§8.4). No other members, ever: Haiku is never a tier (NFR-12).',
           'enum': list([
@@ -1386,12 +1402,29 @@
         }),
       }),
       'additionalProperties': False,
+      'description': '''
+        One role call: written once it finished (`stop`) or ended on a usage or rate limit
+        (`limit_error`), never while it runs. A resume reads these rows to skip finished calls
+        and take their outputs (FR-21: completed role calls are never repeated).
+      ''',
       'properties': dict({
         'api_equiv_usd': dict({
           'default': 0.0,
           'minimum': 0,
           'title': 'Api Equiv Usd',
           'type': 'number',
+        }),
+        'attempt_id': dict({
+          'anyOf': list([
+            dict({
+              'type': 'string',
+            }),
+            dict({
+              'type': 'null',
+            }),
+          ]),
+          'default': None,
+          'title': 'Attempt Id',
         }),
         'cache_read_tokens': dict({
           'default': 0,
@@ -1438,10 +1471,35 @@
           'title': 'Model',
           'type': 'string',
         }),
+        'output': dict({
+          'anyOf': list([
+            dict({
+              'additionalProperties': True,
+              'type': 'object',
+            }),
+            dict({
+              'type': 'null',
+            }),
+          ]),
+          'default': None,
+          'title': 'Output',
+        }),
         'output_tokens': dict({
           'minimum': 0,
           'title': 'Output Tokens',
           'type': 'integer',
+        }),
+        'parent_call_id': dict({
+          'anyOf': list([
+            dict({
+              'type': 'string',
+            }),
+            dict({
+              'type': 'null',
+            }),
+          ]),
+          'default': None,
+          'title': 'Parent Call Id',
         }),
         'role': dict({
           '$ref': '#/$defs/Role',
@@ -1458,12 +1516,39 @@
           'title': 'Runtime',
           'type': 'string',
         }),
+        'step_id': dict({
+          'anyOf': list([
+            dict({
+              'type': 'string',
+            }),
+            dict({
+              'type': 'null',
+            }),
+          ]),
+          'default': None,
+          'title': 'Step Id',
+        }),
+        'stop': dict({
+          'anyOf': list([
+            dict({
+              '$ref': '#/$defs/StopReason',
+            }),
+            dict({
+              'type': 'null',
+            }),
+          ]),
+        }),
         'thinking': dict({
           'title': 'Thinking',
           'type': 'boolean',
         }),
         'tier': dict({
           '$ref': '#/$defs/Tier',
+        }),
+        'turns': dict({
+          'minimum': 0,
+          'title': 'Turns',
+          'type': 'integer',
         }),
       }),
       'required': list([
@@ -1475,6 +1560,8 @@
         'tier',
         'effort',
         'routing_decision_id',
+        'stop',
+        'turns',
         'input_tokens',
         'output_tokens',
         'thinking',
@@ -2753,6 +2840,10 @@
         'role': dict({
           '$ref': '#/$defs/Role',
         }),
+        'role_call_id': dict({
+          'title': 'Role Call Id',
+          'type': 'string',
+        }),
         'run_id': dict({
           'title': 'Run Id',
           'type': 'string',
@@ -2765,6 +2856,7 @@
       'required': list([
         'id',
         'run_id',
+        'role_call_id',
         'role',
         'tool',
         'input',
