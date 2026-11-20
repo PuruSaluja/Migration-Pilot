@@ -76,8 +76,20 @@ sonnet = "claude-sonnet-5-5"
 policy = "routed"           # routed | all_opus | all_sonnet (ablation only)
 effort_policy = "routed"    # routed | all_high
 
+# Optional per-role pins override the router for one role. NFR-12 rules, enforced on load:
+# medium effort only for the editor (with tier = "sonnet"), explorer and pr_writer; never with
+# Opus, never for planner/critic/diagnoser/analyzer; pins need policy = "routed". B2/B3 can't
+# be pinned. policy = "all_opus" forces effort_policy = "all_high" (the change is recorded).
+#
+# [routing.pins.editor]
+# tier = "sonnet"
+# effort = "medium"
+
 [runtime]
 kind = "agent_sdk"          # the only runtime in v1
+# Extra ANTHROPIC_* settings for the Agent SDK, on top of the built-in pins that send the
+# background ("haiku") model to Sonnet 5.5. No Haiku in any value, no API key (Q9).
+# anthropic_env = {}
 
 [github]                    # §11.3 control 1
 repos = []                  # "owner/name" repositories the credential provider may touch

@@ -36,7 +36,13 @@ from typing import Annotated, Any, Literal, Union, get_args, get_origin
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from mpilot.core.errors import ConfigError
-from mpilot.core.types import EffortPolicy, RoutingPolicy
+from mpilot.core.types import EffortPolicy, Role, RoutingPolicy
+from mpilot.model_policy import (
+    RolePin,
+    anthropic_env_problems,
+    model_id_problems,
+    pin_problems,
+)
 from mpilot.models.domain import Budgets
 
 ENV_PREFIX = "MPILOT_"
@@ -151,12 +157,51 @@ class ModelSettings(_Section):
     opus: str = "claude-opus-5-5"
     sonnet: str = "claude-sonnet-5-5"
 
+    @model_validator(mode="after")
+    def _nfr_12(self) -> ModelSettings:
+        if problems := model_id_problems(self.opus, self.sonnet):
+            raise ValueError("; ".join(problems))
+        return self
+
 
 class RoutingSettings(_Section):
-    """§8.4 Policies."""
+    """§8.4 Policies, plus optional per-role pins (validated against NFR-12).
+
+    `policy = all_opus` implies `effort_policy = all_high` (§8.4): it is normalized here and
+    the value the user wrote is recorded in `effort_policy_normalized_from`. That field is a
+    record, not a setting: it is excluded from `config_hash`.
+    """
 
     policy: RoutingPolicy = RoutingPolicy.ROUTED
     effort_policy: EffortPolicy = EffortPolicy.ROUTED
+    pins: dict[Role, RolePin] = Field(default_factory=dict)
+    effort_policy_normalized_from: EffortPolicy | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_all_opus(cls, data: Any) -> Any:
+        if not isinstance(data, dict) or str(data.get("policy", "routed")) != "all_opus":
+            return data
+        written = data.get("effort_policy", EffortPolicy.ROUTED.value)
+        if str(written) == EffortPolicy.ALL_HIGH.value:
+            return data
+        return {
+            **data,
+            "effort_policy": EffortPolicy.ALL_HIGH.value,
+            "effort_policy_normalized_from": str(written),
+        }
+
+    @model_validator(mode="after")
+    def _nfr_12(self) -> RoutingSettings:
+        problems = pin_problems(self.pins, self.policy, self.effort_policy)
+        if (
+            self.effort_policy_normalized_from is not None
+            and self.policy is not RoutingPolicy.ALL_OPUS
+        ):
+            problems.append("effort_policy_normalized_from is only set by the all_opus rule")
+        if problems:
+            raise ValueError("; ".join(problems))
+        return self
 
 
 class RuntimeSettings(_Section):
@@ -166,6 +211,9 @@ class RuntimeSettings(_Section):
     """
 
     kind: Literal["agent_sdk"] = "agent_sdk"
+    #: Extra `ANTHROPIC_*` settings for the SDK subprocess, on top of the model pins that
+    #: `Config.sdk_model_env()` always applies. Validated by `anthropic_env_problems`.
+    anthropic_env: dict[str, str] = Field(default_factory=dict)
 
 
 class ModelPrice(_Section):
@@ -216,12 +264,29 @@ class Config(_Section):
     paths: PathSettings = Field(default_factory=PathSettings)
 
     @model_validator(mode="after")
-    def _prices_only_for_known_models(self) -> Config:
+    def _nfr_12_and_prices(self) -> Config:
         known = {self.models.opus, self.models.sonnet}
+        problems = anthropic_env_problems(self.runtime.anthropic_env, known)
         unknown = sorted(set(self.prices) - known)
         if unknown:
-            raise ValueError(f"prices given for models that are not configured: {unknown}")
+            problems.append(f"prices given for models that are not configured: {unknown}")
+        if problems:
+            raise ValueError("; ".join(problems))
         return self
+
+    def sdk_model_env(self) -> dict[str, str]:
+        """`ANTHROPIC_*` variables for the Agent SDK subprocess (§8.1 item 9).
+
+        Every model setting the SDK exposes is pinned to Sonnet 5.5, including the background
+        ("haiku") model, so that Haiku can never run. P4-01 re-verifies the variable names;
+        user-supplied `runtime.anthropic_env` entries override these but must pass the same
+        rules.
+        """
+        pins = {
+            "ANTHROPIC_DEFAULT_HAIKU_MODEL": self.models.sonnet,
+            "ANTHROPIC_SMALL_FAST_MODEL": self.models.sonnet,
+        }
+        return pins | self.runtime.anthropic_env
 
     def to_budgets(self) -> Budgets:
         """The `Run.budgets` record for a run started under this config."""
@@ -253,18 +318,24 @@ def _read_toml(path: Path) -> dict[str, Any]:
         raise ConfigError(f"cannot read config file {path}: {exc}") from exc
 
 
-def _is_list_type(annotation: Any) -> bool:
+def _has_origin(annotation: Any, container: type) -> bool:
     origin = get_origin(annotation)
-    if origin is list:
+    if origin is container:
         return True
     if origin in (Union, types.UnionType):
-        return any(_is_list_type(arg) for arg in get_args(annotation))
+        return any(_has_origin(arg, container) for arg in get_args(annotation))
     return False
 
 
 def _parse_env_value(raw: str, annotation: Any) -> Any:
-    """Env values are strings; lists accept a JSON array or comma-separated items."""
-    if _is_list_type(annotation):
+    """Env values are strings. Lists accept a JSON array or comma-separated items; dicts
+    must be a JSON object."""
+    if _has_origin(annotation, dict):
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise ConfigError(f"invalid JSON object in environment value: {exc}") from exc
+    if _has_origin(annotation, list):
         text = raw.strip()
         if text.startswith("["):
             try:
@@ -362,6 +433,8 @@ DEFAULT_PROMPTS_DIR = Path(__file__).parent / "agents" / "prompts"
 _HASH_EXCLUDED: dict[str, set[str]] = {
     "github": {"token_file"},
     "paths": {"runs_dir", "db_path"},
+    # A record of a normalization, not a setting (the normalized effort_policy is hashed).
+    "routing": {"effort_policy_normalized_from"},
 }
 
 

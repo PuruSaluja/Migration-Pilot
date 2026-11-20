@@ -19,7 +19,8 @@ from mpilot.config import (
     prompt_hashes,
 )
 from mpilot.core.errors import ConfigError
-from mpilot.core.types import EffortPolicy, RoutingPolicy
+from mpilot.core.types import Effort, EffortPolicy, Role, RoutingPolicy, Tier
+from mpilot.model_policy import RolePin
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -81,6 +82,14 @@ SPEC_DEFAULTS: dict[str, Any] = {
 }
 
 
+#: Structured settings validated by the NFR-12 tests (test_config_nfr12.py).
+NON_NUMERIC_FIELDS = {
+    "routing.pins",
+    "routing.effort_policy_normalized_from",
+    "runtime.anthropic_env",
+}
+
+
 def _get(config: Config, dotted: str) -> Any:
     section, field = dotted.split(".")
     return getattr(getattr(config, section), field)
@@ -100,6 +109,8 @@ def test_every_numeric_default_is_covered_by_the_spec_table() -> None:
         if not isinstance(section, _Section) or section_name in {"github", "paths"}:
             continue
         for field in type(section).model_fields:
+            if f"{section_name}.{field}" in NON_NUMERIC_FIELDS:
+                continue
             assert f"{section_name}.{field}" in covered, f"{section_name}.{field}"
 
 
@@ -400,10 +411,17 @@ def _perturbed(value: Any, annotation: Any) -> Any:
         return value + "x"
     if isinstance(value, list):
         return [*value, "a/b"]
+    if isinstance(value, dict):
+        return {**value, "ANTHROPIC_EXTRA": "x"}
     raise AssertionError(f"no perturbation for {annotation}")
 
 
-_HOST_LOCAL = {("github", "token_file"), ("paths", "runs_dir"), ("paths", "db_path")}
+_HOST_LOCAL = {
+    ("github", "token_file"),
+    ("paths", "runs_dir"),
+    ("paths", "db_path"),
+    ("routing", "effort_policy_normalized_from"),  # a record of a normalization, not a setting
+}
 
 
 def test_config_hash_changes_when_any_behavioural_setting_changes(tmp_path: Path) -> None:
@@ -413,9 +431,12 @@ def test_config_hash_changes_when_any_behavioural_setting_changes(tmp_path: Path
         if (section, field) in _HOST_LOCAL:
             continue
         section_obj = getattr(base, section)
-        if section == "runtime":  # a single-member Literal: nothing else to change it to
+        if (section, field) == ("runtime", "kind"):  # single-member Literal
             continue
-        new_value = _perturbed(getattr(section_obj, field), None)
+        if (section, field) == ("routing", "pins"):
+            new_value = {Role.EDITOR: RolePin(tier=Tier.SONNET, effort=Effort.MEDIUM)}
+        else:
+            new_value = _perturbed(getattr(section_obj, field), None)
         changed = base.model_copy(
             update={section: section_obj.model_copy(update={field: new_value})}
         )

@@ -4,12 +4,13 @@
 Phase 1: Foundations
 
 ## Next task
-[SONNET] P1-06: NFR-12 config validation (see the Phase 1 table). Run the session on Sonnet 5.5 at high effort.
+[OPUS] P1-07: interfaces with docstrings, part 1 (`AgentRuntime`, `ModelRouter`/`RouteOutcome`/`RoutingContext`/`StickyState`, `Tool`, `ToolHost`, `ToolPolicy`, `PolicyCheck`, `GateInput`, `TestFileClassifier`) (see the Phase 1 table). Run the session on Opus 5.5 at high effort.
 
 ## In progress
 (none)
 
 ## Done
+- P1-06 (2026-11-20): NFR-12 validation. `model_policy.py` (pure rules, reusable by the P4-08 lockdown) + config wiring: no Haiku in model fields or in any `ANTHROPIC_*` value (any case; the Sonnet pin on the Haiku variable is accepted), model IDs must match their tier, no API-key variables, `*_MODEL` variables must name a configured model, optional per-role `routing.pins` with the §8.2 medium/Opus rules, `all_opus` normalizes to `all_high` and records the original. 58 new tests including an exhaustive role × tier × effort × policy matrix against an independent oracle; 425 green.
 - P1-05 (2026-11-20): `config.py` (frozen Pydantic sections, loader with file < env `MPILOT_<SECTION>__<FIELD>` < CLI overrides, `config_hash` over settings + prompt files, `to_budgets()`), `mpilot.toml.example` (a test asserts it equals the defaults), CLI `--config` + startup order (config → token scrub → logging; any config error exits 2). 84 new tests; 367 green.
 - P1-04 (2026-11-20): `models/domain.py`, a Pydantic v2 model for every §12 class (+ nested `PackageChange`, `Budgets`, `Spent`, `FailedTest`, `VerifyStageResult`, `VerifyResult`, `Violation`, `RubricScores`, `HumanReview`), D9 `passed_ids`/`failed_ids` + `executed_count`. `RoutingPolicy`/`EffortPolicy` added to `core/types.py`. 99 new tests (round trip per model, §12 field-presence table checked against SPEC, invariants, syrupy JSON-schema snapshot). 283 tests green. Also made two P1-03 timeout tests robust (3 s instead of 0.5 s; one failed once under load).
 - P1-03 (2026-11-20): `core/spawn.py` (`run`/`start`/`inherit`: explicit env only, absolute argv[0] and PATH entries, token refused in argv/env keys/cwd and in env values unless `pass_github_token`, own session, timeout kills the group and returns within a grace period) and `core/github_token.py` (read once from `MPILOT_GITHUB_TOKEN` or a 0600, owner-only, non-symlink file outside any git work tree; env var removed and its bytes wiped in place so `/proc/<pid>/environ` no longer shows it). CLI scrubs first thing. AST lint forbids every process-starting form outside `spawn.py`. Spec-reviewer: first pass 2 blockers + 5 non-blocking, all fixed; second pass approved, and 3 of its 5 non-blocking points fixed (duplicate env entries all wiped, reap on interrupt during the kill grace, `from importlib import import_module` in the lint). 184 tests green.
@@ -52,6 +53,10 @@ Phase 1: Foundations
   - `config_hash` covers every setting except host-local ones (`github.token_file`, `paths.*`), plus each `agents/prompts/*.md` file; the directory doesn't exist yet, which hashes as empty.
   - Settings added beyond the §6 table are the other named numeric defaults in the spec (sandbox limits, clone depth, repo size, flaky %, coverage gates, context and tool caps, 7-day release age, no-progress and regression thresholds). Allowlists (egress, fetch) are left to P2-08 and P5-04, which own their contents.
   - `pydantic-settings` (listed in docs/requirements.md) is not used: a small explicit loader gives exact precedence and strictness. Dependency left in place; drop it if you prefer.
+- 2026-11-20 (P1-06), design points for the owner:
+  - §8.2 says the config must reject settings that "pin" medium onto Opus or onto Planner/Critic/Diagnoser/Analyzer, so I added the pin mechanism it implies: `[routing.pins.<role>]` with optional `tier`/`effort`. The router (P4-02, P5-11/12) must honour pins; until then they are validated but unused. Pins are only accepted under `routing.policy = routed`; medium needs `effort_policy = routed`; the Editor's medium pin also needs `tier = sonnet`; Planner/Critic can't be pinned to Sonnet; B2/B3 can't be pinned (B8).
+  - New `runtime.anthropic_env` (extra `ANTHROPIC_*` settings for the SDK) and `Config.sdk_model_env()`, which always pins `ANTHROPIC_DEFAULT_HAIKU_MODEL` and `ANTHROPIC_SMALL_FAST_MODEL` to the configured Sonnet (same as `.claude/settings.json`). P4-01 must re-verify the variable names and whether more model variables exist.
+  - `routing.effort_policy_normalized_from` is a record of the `all_opus` → `all_high` normalization; it is excluded from `config_hash`, so both spellings hash the same.
 
 ## Task list
 
