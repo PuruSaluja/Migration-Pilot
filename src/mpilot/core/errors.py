@@ -69,3 +69,14 @@ class StoreError(MpilotError, ValueError):
     """The run store refused a write: a duplicate id, a row for a run that does not exist, a
     value the schema's constraints forbid, or a checkpoint that would undo what the previous
     one recorded (B5). A `ValueError` too, so callers that only care that it failed can say so."""
+
+
+class ScriptDivergedError(RuntimeCallError):
+    """A scripted or replayed role call did not match what the code under test did: the script
+    ran out, ended without an answer, or a tool call came back differently from what was
+    expected. Loud on purpose: a test double that silently improvises proves nothing."""
+
+
+class CassetteMismatchError(ScriptDivergedError):
+    """No recorded cassette entry matches this request (its content hash is unknown, or every
+    matching entry was used). The message names which parts of the request changed."""

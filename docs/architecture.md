@@ -136,6 +136,60 @@ class AgentRuntime(Protocol):
 Implementations: `AgentSDKRuntime` (default), `MessagesRuntime` (optional), `FakeRuntime` (scripted), `CassetteRuntime` (replay, B6).
 Test double: `testing.doubles.EchoRuntime`.
 
+Helpers in `agents/runtime.py` every runtime shares:
+
+```python
+def schema_errors(schema: dict, answer: dict) -> list[str]: ...    # JSON Schema 2020-12; non-empty => SCHEMA_INVALID
+def llm_call_from(req: RoleCallRequest, res: RoleCallResult, *, runtime: str, api_equiv_usd: float = 0.0) -> LLMCall: ...
+RoleCallRequest.content() -> dict          # request_hash() hashes this; part_hashes() hashes each key, for cassette diffs
+```
+
+### Scripted runtime and cassettes (`agents/fake_runtime.py`, `agents/cassette.py`, P1-11)
+
+`play()` is the one engine both use: it runs a `ScriptedCall` as the model's side of a role call, through the
+real `ToolHost` and `BudgetGuard`. Per model turn: the turn's usage is charged (`after_turn`; a crossed cap ends
+the call BUDGET_STOP before any of its tools run); each tool call is guard-checked then `invoke`d; once the host
+refuses one with TOOL_CALL_CAP the next ends the call TOOL_CALL_CAP; a `final` answer is validated against the
+request's schema (COMPLETED or SCHEMA_INVALID). After the last turn, `raises` fires (usage limit, runtime error).
+
+```python
+class ScriptedToolCall(BaseModel, frozen=True):   # name is exactly what the model sends: "Bash" is a valid script
+    name: str; args: dict; expect_decision: PolicyDecision | None; expect_deny_code: str | None; expect_output: dict | None
+class ScriptedTurn(BaseModel, frozen=True):       # tool calls XOR a final answer
+    tool_calls: tuple[ScriptedToolCall, ...]; final: dict | None; usage: Usage
+class ScriptedCall(BaseModel, frozen=True):
+    turns: tuple[ScriptedTurn, ...]; raises: RaiseKind | None; raise_message: str; expect_role: Role | None
+    model_id: str | None; models_seen_extra: tuple[str, ...]; thinking_enabled: bool   # overrides, to build results
+    effort_applied: Effort | None; latency_ms: int                                    # check_result must reject
+    @classmethod def answer(output, **kw); @classmethod def using(*tool_calls, then=output, **kw)
+class RaiseKind(StrEnum): USAGE_LIMIT; RUNTIME_ERROR
+def tool(name: str, **args) -> ScriptedToolCall: ...      # exposes it as mcp__mpilot__<name>
+@dataclass(frozen=True)
+class PlayedCall: request; result | None; invocations; error | None
+async def play(script, req, tools, guard, invocations, *, strict_outputs: bool) -> RoleCallResult: ...
+
+@dataclass
+class FakeRuntime:       # script: Sequence[ScriptedCall | Callable[[RoleCallRequest], ScriptedCall]], used in order
+    calls: list[PlayedCall]; remaining: int; def assert_exhausted(); lockdown_error: str | None; strict_outputs=True
+    # no step left, a script that just stops, or a failed expectation => ScriptDivergedError (loud, never improvised)
+```
+
+A cassette (decision B6) is JSON lines: `{"mpilot_cassette": 1}`, then one `CassetteEntry` per recorded role call,
+keyed by `request_hash` (content only; IDs excluded). Prompts are never stored, only their per-part hashes;
+tool arguments, outputs and answers are, so `write_cassette` requires a `redact` function (the gitleaks scan, P4-22).
+
+```python
+class CassetteEntry(BaseModel, frozen=True): request_hash: str; parts: dict[str, str]; role: Role; call: ScriptedCall
+def write_cassette(path, entries, *, redact: Callable[[str], str]) -> None: ...   # atomic, deterministic bytes
+def read_cassette(path) -> list[CassetteEntry]: ...                              # ValueError names file:line
+@dataclass
+class CassetteRuntime:   # replay: name "cassette"; same-hash entries used oldest first, once each
+    entries; strict_outputs=False; calls; def unused(); def assert_all_used(); @classmethod from_file(path)
+    # no matching entry => CassetteMismatchError naming the changed parts ("differs in: user_prompt, tool_allowlist");
+    # the recorded tool calls run against the LIVE host, whose allow/deny must equal the recording
+    # (else ScriptDivergedError); outputs are compared only when strict_outputs
+```
+
 ## 5. Model Router (`agents/router.py`)
 
 ```python

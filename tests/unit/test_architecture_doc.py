@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from mpilot.agents import router, runtime
+from mpilot.agents import cassette, fake_runtime, router, runtime
 from mpilot.knowledge import base as kb
 from mpilot.models import artifacts, state
 from mpilot.orchestrator import base as ob
@@ -118,6 +118,15 @@ VALUE_TYPES: list[type] = [
     kb.UsageSite,
     kb.UsageIndex,
     kb.CodemodEntry,
+    # P1-11
+    fake_runtime.ScriptedToolCall,
+    fake_runtime.ScriptedTurn,
+    fake_runtime.ScriptedCall,
+    fake_runtime.RaiseKind,
+    fake_runtime.PlayedCall,
+    fake_runtime.FakeRuntime,
+    cassette.CassetteEntry,
+    cassette.CassetteRuntime,
 ]
 FUNCTIONS = [
     "check_result",
@@ -135,6 +144,12 @@ FUNCTIONS = [
     "sandbox_env_problems",
     "is_mpilot_branch",
     "sticky_scope",
+    "schema_errors",
+    "llm_call_from",
+    "tool",
+    "play",
+    "write_cassette",
+    "read_cassette",
 ]
 
 

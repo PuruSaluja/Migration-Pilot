@@ -13,12 +13,13 @@ import json
 from enum import StrEnum
 from typing import Annotated, Any, Protocol, Self, runtime_checkable
 
+from jsonschema import Draft202012Validator
 from pydantic import BaseModel, ConfigDict, Field, PlainSerializer, field_validator, model_validator
 
 from mpilot.core.errors import ForbiddenModelError, LockdownViolation, RuntimeCallError
 from mpilot.core.types import Effort, LLMCallId, Role, RoutingDecisionId, Tier, ToolCallId, Usage
 from mpilot.model_policy import mentions_haiku
-from mpilot.models.domain import NonNegInt, PositiveInt
+from mpilot.models.domain import LLMCall, NonNegInt, PositiveInt
 from mpilot.tools.base import REGISTRY_TOOL_NAMES, ToolContext, ToolHost
 
 _NameSet = Annotated[frozenset[str], PlainSerializer(sorted, return_type=list[str])]
@@ -97,15 +98,14 @@ class RoleCallRequest(_Frozen):
     def role(self) -> Role:
         return self.context.role
 
-    def request_hash(self) -> str:
-        """SHA-256 over the request's *content* (cassette key, B6).
+    def content(self) -> dict[str, Any]:
+        """Everything that can change what the model does, as JSON-ready data, keyed by part.
 
         Run, call, step, attempt and routing-decision IDs are random per run
         (`core.types.new_*_id`), so they are excluded: a replay must match its recording.
-        Everything that can change what the model does is included.
         """
         ctx = self.context
-        content = {
+        return {
             "role": ctx.role,
             "caller": ctx.caller,
             "step_type": ctx.step_type,
@@ -119,8 +119,19 @@ class RoleCallRequest(_Frozen):
             "output_schema": self.output_schema,
             "max_turns": self.max_turns,
         }
-        canon = json.dumps(content, sort_keys=True, separators=(",", ":"))
-        return hashlib.sha256(canon.encode()).hexdigest()
+
+    def request_hash(self) -> str:
+        """SHA-256 over the request's *content* (cassette key, B6); see `content`."""
+        return _sha256_json(self.content())
+
+    def part_hashes(self) -> dict[str, str]:
+        """One hash per part of `content`, so a cassette mismatch can say what changed."""
+        return {name: _sha256_json(value) for name, value in self.content().items()}
+
+
+def _sha256_json(value: Any) -> str:
+    canon = json.dumps(value, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canon.encode()).hexdigest()
 
 
 class StopReason(StrEnum):
@@ -191,6 +202,41 @@ def check_result(req: RoleCallRequest, res: RoleCallResult) -> None:
             f"call {res.call_id} made {len(res.tool_call_ids)} tool calls; the runtime must stop "
             f"after the refusal of call {req.context.max_tool_calls + 1}"
         )
+
+
+def schema_errors(schema: dict[str, Any], answer: dict[str, Any]) -> list[str]:
+    """Problems with a final answer under the role's JSON schema (draft 2020-12); empty means
+    valid. A runtime ends the call with SCHEMA_INVALID when this is not empty (§8.4 trigger 3)."""
+    validator = Draft202012Validator(schema)
+    return sorted(
+        f"{'/'.join(map(str, e.path)) or '<root>'}: {e.message}"
+        for e in validator.iter_errors(answer)
+    )
+
+
+def llm_call_from(
+    req: RoleCallRequest, res: RoleCallResult, *, runtime: str, api_equiv_usd: float = 0.0
+) -> LLMCall:
+    """The `LLMCall` row for a finished call (§8.1 item 6, FR-18). Run `check_result` first:
+    this records the model and effort the call *actually* ran at, and the tier the router
+    chose. It carries `limit_error=None`; a call that ended on a limit has no result."""
+    return LLMCall(
+        id=res.call_id,
+        run_id=req.context.run_id,
+        role=req.role,
+        runtime=runtime,
+        model=res.model_id,
+        tier=req.choice.tier,
+        effort=res.effort_applied,
+        routing_decision_id=req.routing_decision_id,
+        input_tokens=res.usage.input_tokens,
+        output_tokens=res.usage.output_tokens,
+        cache_read_tokens=res.usage.cache_read_tokens,
+        cache_write_tokens=res.usage.cache_write_tokens,
+        thinking=res.thinking_enabled,
+        api_equiv_usd=api_equiv_usd,
+        latency_ms=res.latency_ms,
+    )
 
 
 class RuntimeCapabilities(_Frozen):
