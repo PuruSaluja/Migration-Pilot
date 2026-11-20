@@ -41,7 +41,7 @@ Before pinning, re-check every version and API at build time (SPEC Appendix A).
 | `pydantic` ≥ 2 | Data models (§12) |
 | `pydantic-settings` | `mpilot.toml` / env config loader |
 | `sqlalchemy` ≥ 2, `alembic` | SQLite store (WAL) and migrations |
-| `typer` | `mpilot` CLI (§13.1). Proposed; confirm in P0-1 |
+| `typer` | `mpilot` CLI (§13.1) |
 | `fastapi`, `uvicorn`, `sse-starlette` | REST API and SSE (§13.2) |
 | `jinja2` | Web UI templates (HTMX and diff2html are vendored static assets, not Python packages) |
 | `docker` | Docker SDK for the sandbox driver |
@@ -61,6 +61,8 @@ Before pinning, re-check every version and API at build time (SPEC Appendix A).
 | `mypy` | `--strict` type checking |
 | `pytest`, `pytest-cov` | Tests and the ≥ 80% coverage gates |
 | `syrupy` | Snapshot tests |
+| `hypothesis` | Property tests (router invariants, budgets) |
+| `respx` | HTTP mocking for registry, changelog and GitHub tests |
 | `pre-commit` | Runs the checks before each commit |
 | `types-pyyaml` | Type stubs for mypy |
 
@@ -74,5 +76,12 @@ Before pinning, re-check every version and API at build time (SPEC Appendix A).
 
 ## Hardware (this machine)
 
-8 CPUs, 7 GiB RAM visible to WSL, ~950 GB free disk. That's enough for bench parallelism 1 (NFR-9).
-If image builds or Opus runs feel memory-starved, raise the WSL memory limit in `%UserProfile%\.wslconfig` (`[wsl2]` → `memory=12GB`).
+8 CPUs and 16 GB RAM. WSL must see 12 GB (SPEC Q10) so the 8 GB sandbox limit fits. Set it in `%UserProfile%\.wslconfig`:
+
+```
+[wsl2]
+memory=12GB
+```
+
+Then run `wsl --shutdown` in PowerShell and reopen Ubuntu.
+Run files (workspaces, mirrors, artifacts, package caches) live in `runs/` on a fixed-size 100 GB filesystem image created by `setup-dev.sh` (sparse, so only used space takes room). Containers can't write anywhere else (read-only root, capped `/tmp`). Docker's own image storage stays in `/var/lib/docker`.

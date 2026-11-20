@@ -1,28 +1,32 @@
 # PROGRESS.md
 
 ## Current phase
-Phase 0: Plan
+Phase 1: Foundations
 
 ## Next task
-**Owner: approve or amend the P0-1 plan.** Review this task list, `docs/decisions.md` (ambiguities; the [CALL] items need your decision) and `docs/architecture.md` (draft interfaces).
-Once approved: [OPUS] P0-2, which writes the approved decisions into SPEC.md and §20.
+[SONNET] P1-01: Scaffold (see the Phase 1 table). Run the session on Sonnet 5.5 at high effort.
+Owner, before Phase 2: set WSL memory to 12 GB (`.wslconfig`) and re-run `bash scripts/setup-dev.sh` for the loopback `runs/` filesystem; `scripts/check-env.sh` must pass.
 
 ## In progress
-- P0-1: plan written, awaiting owner approval.
+(none)
 
 ## Done
 - Pre-P0 env prep: `docs/requirements.md` (host tools, Python deps, accounts), `scripts/setup-dev.sh` (Docker Engine + gVisor + gh + gitleaks), `scripts/check-env.sh` (read-only verifier). Host OS resolved as SPEC Q7.
 - Host setup run by owner 2026-11-19: native Docker Engine, gVisor verified (`docker run --runtime=runsc` reports kernel `4.19.0-gvisor`, systrap platform), gh and gitleaks installed. No runc fallback needed.
 - Repo on GitHub: `PuruSaluja/Migration-Pilot` (public). History rewritten to the noreply email before the final push.
-- P0-1 drafts: task list (below), `docs/decisions.md`, `docs/architecture.md`.
+- P0-1: task list (below), `docs/decisions.md`, `docs/architecture.md`. Two spec-reviewer passes; all findings fixed. Approved by the owner 2026-11-19.
+- P0-2: SPEC v1.4 written (new §9.5, §20 rows), `.claude/settings.json` pins the background model to Sonnet, loopback `runs/` in `setup-dev.sh`, checks in `check-env.sh`.
 
 ## Blockers
-- None for P0-1. Before Phase 4: create the fine-grained PAT (§11.6).
+- None for Phase 1.
+- Before Phase 2 (owner): WSL memory 12 GB in `.wslconfig` (Q10). The loopback `runs/` is already mounted; optionally fix its fstab line (`0 0`, `discard`).
+- Before Phase 4 (owner): create the fine-grained PAT (§11.6).
 
 ## Decisions (short notes; formal ones go in SPEC.md §20)
 - 2026-11-19: SPEC v1.3 adds strict effort routing (medium/high) for both the product router (§8.4) and the build process (§16.1 [SONNET-MED] tag, §16.2 subagent efforts). See §20.
 - 2026-11-19: Dev host = Ubuntu 24.04 / WSL2, native Docker Engine + gVisor, not Docker Desktop (SPEC Q7, §20). No requirements.txt: Python deps go in pyproject.toml + uv.lock in Phase 1; the planned list is in docs/requirements.md.
 - 2026-11-19: Test repos and forks live on the owner's personal GitHub account `PuruSaluja` (SPEC Q8).
+- 2026-11-19: SPEC v1.4 applies the approved P0 decisions and both review passes (see §20). Owner: no API key ever (Q9), WSL 12 GB (Q10), loopback `runs/`, background model pinned to Sonnet.
 
 ## Task list
 
@@ -33,28 +37,28 @@ How to read it:
 - **Acceptance** is the test or check that proves the task done. The standard checks (ruff, format, mypy --strict, pytest) are always required too.
 - Phases 5–10 are provisional: they get re-planned at the P4-25 checkpoint, using the measured pace (SPEC §16.4).
 
-- Revised once after the spec-reviewer pass: 3 blockers fixed (C2, A2 host-computed diff, H8 task), tags corrected, oversized tasks split.
+- Revised after two spec-reviewer passes (5 blockers fixed in total; see SPEC §20).
 
 ### Phase 0: Plan
 | ID | Tag | Task | Refs | Deps | Acceptance |
 |---|---|---|---|---|---|
 | P0-1 | OPUS | Task list, interface signatures, ambiguity list | §18.2 | — | Owner approves this file, `docs/decisions.md` and `docs/architecture.md` |
-| P0-2 | OPUS | Write the approved [SPEC] decisions into SPEC.md (A1, A2, A3, A8, A11, B1, B5, C1, C6, D1, D2, D6, D9, D10) plus §20 rows; fix the version in the header; update `docs/requirements.md` (typer, respx, hypothesis); D6 loopback `runs/` in `setup-dev.sh` | §20 | P0-1 | Every approved item reflected in SPEC and §20; nothing beyond the approved ones |
+| P0-2 | OPUS | Write the approved [SPEC] decisions into SPEC.md (A1, A2, A3, A8, A11, B1, B5, C1, C6, D1, D2, D6, D9, D10) plus §20 rows; fix the version in the header; update `docs/requirements.md` (typer, respx, hypothesis); D6 loopback `runs/` in `setup-dev.sh` | §20 | P0-1 | Every approved item reflected in SPEC and §20. The stricter changes from review passes 2–3 (full-pipeline final verification, stricter (d)/(e), H8 via config files, host snapshot refs) need the owner's explicit OK |
 
 ### Phase 1: Foundations
 | ID | Tag | Task | Refs | Deps | Acceptance |
 |---|---|---|---|---|---|
 | P1-01 | SONNET | Scaffold: `pyproject.toml`, `uv.lock`, ruff, mypy strict and pytest config with the `docker`/`network`/`e2e` markers and the E1 skip policy, pre-commit, `.gitignore` (`.env`, `mpilot.toml`, `runs/`, `*.db`), JSON logging (E6), Typer app with every §13.1 command stubbed (including `bench resume` and `bench report`) | §13.1, §15, NFR-7 | P0-2 | All checks green; `mpilot --help` lists every §13.1 command (test asserts it); `e2e` deselected by default; Docker tests fail without Docker unless `MPILOT_SKIP_DOCKER=1`; logs are valid JSON lines |
-| P1-02 | SONNET | `core/`: enums (with END_CANCELLED), IDs, errors, `exit_code_for` (C6), `Usage.cap_tokens` (B2), token estimator `chars/3` (B3), `Clock` plus a fake clock | §7.4, §13.1, §14.5, NFR-1 | P1-01 | Tier and Effort have exactly 2 members; FailureCategory matches §14.5 exactly; exit-code matrix covers every terminal state (exit 4 and 5 asserted); `cap_tokens` formula |
+| P1-02 | SONNET | `core/`: enums (with END_CANCELLED), IDs, errors, `exit_code_for` (C6), `Usage.cap_tokens` (B2), token estimator `chars/3` (B3), `Clock` plus a fake clock | §7.4, §13.1, §14.5, NFR-1 | P1-01 | Tier and Effort have exactly 2 members; FailureCategory matches §14.5 exactly; exit-code matrix covers every terminal state plus PAUSED_LIMIT (exit 4 and 5 asserted); `cap_tokens` formula |
 | P1-03 | OPUS | `core/spawn.py`: explicit-env subprocess helper + token scrub at startup (A10) | §9.3, §11.3, NFR-6 | P1-02 | Test: after startup `MPILOT_GITHUB_TOKEN` is gone from `os.environ`; a child started via `spawn` sees only the keys passed; a lint test forbids `subprocess`/`os.system` outside `spawn.py` |
 | P1-04 | SONNET | Pydantic v2 domain models for every §12 class, plus `TestResult.passed_ids`/`failed_ids` (D9) | §12 | P1-02 | Every §12 field present; JSON round-trip per model; invalid tier or effort rejected; syrupy snapshot of the JSON schemas |
 | P1-05 | SONNET | Config loader: `mpilot.toml` < env `MPILOT_*` < CLI; every §6 default; tier→model ID; `routing.policy`/`effort_policy`; empty price table (B7); `config_hash`; `mpilot.toml.example` | §6, §8.4 | P1-04 | Precedence tests; defaults equal §6; `config_hash` changes exactly when a prompt, model or setting changes |
-| P1-06 | SONNET | NFR-12 config validation | NFR-12, §8.2, FR-22 | P1-05 | Rejects: "haiku" in any model field or `ANTHROPIC_*` override (any case); effort outside {medium, high}; medium pinned to Opus or to Planner/Critic/Diagnoser/Analyzer; `all_opus` normalizes to `all_high` and is recorded |
+| P1-06 | SONNET | NFR-12 config validation | NFR-12, §8.2, FR-22 | P1-05 | Rejects: "haiku" in any model field or in the **value** of any `ANTHROPIC_*` override (any case; the Sonnet pin itself is accepted); effort outside {medium, high}; medium pinned to Opus or to Planner/Critic/Diagnoser/Analyzer; `all_opus` normalizes to `all_high` and is recorded |
 | P1-07 | OPUS | Interfaces with docstrings, part 1: `AgentRuntime`, `ModelRouter`/`RouteOutcome`/`RoutingContext`/`StickyState` (B9), `Tool`, `ToolHost`, `ToolPolicy`, `PolicyCheck`, `GateInput`, `TestFileClassifier` | §8, §9.1, §11 | P1-04 | mypy strict; a conformance test per Protocol; `docs/architecture.md` matches the code |
 | P1-08 | OPUS | Interfaces part 2: `Sandbox` (two containers, `frozen()`), `SandboxDriver`, `Workspace` (`walk_tree`), `VcsAdapter`, `CredentialProvider`, `Orchestrator`, `next_state`, `BudgetManager` (guard, attempts), `RunStore`, `EventBus`, `Verifier.final_verify`, knowledge drafts | §7, §9.3, §10, §11.6 | P1-07 | Same as P1-07; VcsAdapter has no merge method (asserted) |
 | P1-09 | SONNET | SQLAlchemy tables + Alembic initial migration | §12 | P1-08 | Upgrade and downgrade on a temp DB; DDL compiles for SQLite and Postgres dialects |
 | P1-10 | SONNET | `RunStore` implementation, SQLite in WAL mode | §12, NFR-4 | P1-09 | Round-trip of every model; `journal_mode` = wal; checkpoint then latest_checkpoint returns it |
-| P1-11 | SONNET | `FakeRuntime` (scripted, goes through `ToolHost`, can raise `UsageLimitError`) + `CassetteRuntime` replay (B6) | §18.7, FR-21 | P1-07, P1-10 | Scripted run writes ToolCall and LLMCall rows; a policy denial is recorded; a cassette request-hash mismatch fails loudly |
+| P1-11 | SONNET | `FakeRuntime` (scripted, goes through a `ToolHost`, can raise `UsageLimitError`) + `CassetteRuntime` replay (B6) | §18.7, FR-21 | P1-07, P1-10 | Using a minimal test-double ToolHost: scripted run writes ToolCall and LLMCall rows; a scripted denial is recorded; a cassette request-hash mismatch fails loudly |
 | P1-12 | OPUS | **Phase 1 gate:** spec-reviewer on the interfaces; fix findings; freeze `docs/architecture.md` | §16.4 P1 DoD | P1-01…11 | `mpilot --help` works; checks green; spec-reviewer approves |
 
 ### Phase 2: Sandbox, detection, baseline
@@ -62,11 +66,11 @@ How to read it:
 |---|---|---|---|---|---|
 | P2-01 | OPUS | Host-side `Workspace` (A1), tests first: `openat2` RESOLVE_BENEATH/NO_SYMLINKS/NO_MAGICLINKS + S_ISREG; `walk_tree` | FR-10, NFR-6 | P1-12 | Rejected: `..`, absolute paths, symlinked files/dirs/parents, symlink swapped in mid-operation, FIFOs, devices, setuid files; read size capped; every write returns a unified diff; `walk_tree` never follows links |
 | P2-02 | SONNET | Docker driver lifecycle: create/destroy, §9.3 resource limits, runsc detection with runc fallback + warning, exec with output tails and timeouts | §9.2, §9.3, NFR-10 | P2-01 | Docker tests: pids and memory limits hold; a timeout kills the command; `runtime == runsc` on this host; runc fallback records a warning (fault-injected) |
-| P2-03 | OPUS | Sandbox hardening + `frozen()` pause around host file ops + uid mapping (A1) | §9.3, NFR-6 | P2-02 | uid ≠ 0 and equals the host uid; CapEff = 0; no-new-privileges; root filesystem read-only; while frozen, no sandbox process runs (test with a spinning process); host writes visible inside runsc immediately and vice versa |
+| P2-03 | OPUS | Sandbox hardening + `frozen()` around host file ops (pause, or the kill-all fallback if pause fails under runsc) + uid mapping (§9.5) | §9.3, §9.5, NFR-6 | P2-02 | uid ≠ 0 and equals the host uid; CapEff = 0; no-new-privileges; root filesystem read-only; while frozen, no sandbox process runs (test with a spinning process); host writes visible inside runsc immediately and vice versa; the mechanism in use is recorded |
 | P2-04 | SONNET | Workspace export/import with a hash manifest; never follows symlinks; `restore` | FR-21 | P2-03 | Export → destroy → restore gives an identical tree hash (including `.git`); a symlink in the workspace is exported as a link, never as its target |
 | P2-05 | SONNET | Disk limits (D6): poll size during exec and kill at the limit; tmpfs `/tmp` cap; check the loopback `runs/` | §9.3, D6 | P2-02 | A command writing past the limit is killed with `ENV_INSTALL`; `/tmp` is capped |
 | P2-06 | SONNET-MED | Base Dockerfiles: node 18/20/22, python 3.9–3.13; non-root user; ripgrep, git, tree-sitter CLI; FROM lines pinned by digest | §9.3 | P2-02 | Files only; reviewed in P2-07 |
-| P2-07 | SONNET | Image build script + `images/digests.lock` + image smoke tests; package caches keyed by lockfile hash | §9.3, NFR-5 | P2-06 | Every image builds; `rg`/`git` run in each; one lock entry per image; cache key changes when the lockfile changes |
+| P2-07 | SONNET | Image build script + `images/digests.lock` + image smoke tests; package caches under `runs/cache/` keyed by lockfile hash, read-only in the work container, read-write only in install containers | §9.3, NFR-5 | P2-06 | Every image builds; `rg`/`git` run in each; one lock entry per image; cache key changes with the lockfile; a write to the cache from the work container fails |
 | P2-08 | OPUS | Egress proxy container: CONNECT only on port 443, Host + SNI allowlist, denials logged (A7) | §9.3, §11.3 | P2-02 | Allowlisted registry reachable; example.com denied and logged; raw-IP CONNECT denied; non-443 denied; SNI/Host mismatch denied |
 | P2-09 | OPUS | Install container on a per-run internal network; work container `network_mode=none` (A7) | §9.3, NFR-6, NFR-9 | P2-08 | Work container: registry, 1.1.1.1, host gateway and DNS all fail. Install container: npm registry OK, others denied, Docker DNS lookups fail. Two runs get separate networks; networks are removed after the run, even on exception |
 | P2-10 | SONNET | Node env detection | FR-3, §9.4 | P1-12 | Tests first per rule: lockfile → package manager, yarn berry, npm stub ignored, typecheck, build, junit reporter, runtime version, simple monorepo |
@@ -89,17 +93,17 @@ How to read it:
 | P3-03 | OPUS | Intake: hardened host clone (A2 env and flags), depth ≤ 50, `base_sha`, unauthenticated `repo_info` size check (D8), local paths, mirror creation | FR-2, A2 | P2-20 | > 500 MB refused; a malicious fixture repo's hooks, submodules and LFS filters never run; depth ≤ 50 asserted; `base_sha` recorded |
 | P3-04 | OPUS | Pure §7.4 transition table (with END_CANCELLED), tests first | §7.4 | P2-20 | Every legal edge tested; illegal edges raise; PAUSED_LIMIT returns to the previous state |
 | P3-05 | OPUS | State-machine driver: handlers, checkpoints, EventBus events, resume skeleton | §7.4, NFR-4 | P3-04 | Kill mid-run in a test, then resume from the checkpoint; events stream in order |
-| P3-06 | OPUS | Host diff (`walk_tree` vs mirror at `base_sha`), apply in the mirror, tree-equality check, phase commits (A2) | FR-16, US-4, A2 | P3-03 | A diff hidden from sandbox git (skip-worktree, gitignored conftest.py, `diff.external`) still shows up; mirror tree = walked tree; one commit per phase; no host git runs with cwd in the workspace |
+| P3-06 | OPUS | Host diff (`walk_tree` vs mirror at `base_sha`, artifact rules from host-owned data only), apply in the mirror, tree-equality check (i), phase commits, attempt snapshot refs (§9.5) | FR-16, US-4, §9.5 | P3-03 | A diff hidden from sandbox git (skip-worktree, gitignored conftest.py, `diff.external`) still shows up; `node_modules`/`.venv` excluded; a workspace `.gitignore` edit appears in the diff; mirror tree = walked tree; one commit per phase; `restore` from an attempt or phase ref reproduces the tree; a file tracked at `base_sha` under an ignored pattern is never dropped; phase commits = diffs between consecutive snapshots; no host git runs with cwd in the workspace |
 | P3-07 | SONNET | Bump with npm, including family bumps | FR-8 | P3-02, P2-17 | Resolved version (`npm ls --json`) satisfies the target; peer conflict → diagnostic |
 | P3-08 | SONNET | Bump with pnpm and yarn (classic and berry) | FR-8 | P3-07 | Same as P3-07 per manager |
 | P3-09 | SONNET | Bump with pip and uv | FR-8 | P3-02, P2-17 | Resolved version (`pip show`/lockfile) satisfies the target |
 | P3-10 | SONNET | Bump with poetry and pdm | FR-8 | P3-09 | Same as P3-09 per manager |
 | P3-11 | SONNET | Verification pipeline: install if manifests changed → build → typecheck → targeted → full; rerun-once **for diagnosis only** (C2); suite timeout; classification for C7 escalate-immediately | FR-11, NFR-2, §7.4 | P2-17 | Stage-order tests; a rerun result never changes the judged result; proxy 401 → private-registry escalation category |
 | P3-12 | SONNET | `trim_log` (§10.3) + `failure_signature` (FR-12) | FR-12, §10.3 | P2-14 | ANSI and progress bars stripped; ≤ 60 head/tail lines; dedupe by signature; same error with different paths, lines or addresses → same signature |
-| P3-13 | OPUS | `final_verify`: fresh sandbox from the mirror commit; its result is what the gate judges (A2, C2) | §11.2 (a)(b), A2 | P3-06, P3-11 | A change present in the workspace but missing from the mirror commit changes nothing in the final result; the gate input comes only from this run |
+| P3-13 | OPUS | `final_verify`: whole pipeline in a fresh sandbox from the mirror commit, fresh or hash-verified cache, resolved versions, extra coverage run (§9.5) | §9.5, §11.2 | P3-06, P3-11 | A gitignored `.d.ts` stub, a tampered `node_modules/<pkg>/package.json` or a poisoned cache entry in the work container changes nothing in the final result; success and gate inputs come only from this run |
 | P3-14 | SONNET | Codemod registry: schema with `removed_apis` (D3) + 3 entries with flags verified | FR-9 | P3-11 | Schema validation; 3 entries load |
 | P3-15 | SONNET | Codemod tools in images + `run_codemod` + own commit | FR-9 | P3-14, P3-06 | Codemods run before any edit; each gets its own commit; a failing codemod doesn't abort |
-| P3-16 | SONNET | CLI: `mpilot run --no-pr`, `status`, `logs --follow`, `cancel` | §13.1 | P3-05, P3-07…15 | CLI tests; every exit code produced from real end states |
+| P3-16 | SONNET | CLI: `mpilot run --no-pr`, `status`, `logs --follow`, `cancel` | §13.1 | P3-05, P3-07…15 | CLI tests; exit codes 0–3 and cancelled produced from real end states (4 in P4-16, 5 in P4-18, rejected and 130 in P5-10) |
 | P3-17 | SONNET | 5 migration fixtures with real old dependencies (network marker) | §16.4 P3 | P3-07…10 | Each has a green baseline and goes red after the bump |
 | P3-18 | SONNET | B0 and B1 system configurations + minimal EvalResult row | §14.6 | P3-15, P3-16, P3-17 | B0/B1 end to end on the 5 fixtures |
 | P3-19 | OPUS | **Phase 3 gate** | §16.4 P3 DoD | P3-01…18 | Zero model calls (from the LLMCall table); spec-reviewer approves the orchestrator, intake and mirror |
@@ -119,15 +123,15 @@ How to read it:
 | P4-10 | OPUS | `mpilot selftest`, runtime part + first owner-triggered real check | §8.1, H9 | P4-09 | Real call: built-in tool refused, no user settings loaded, no Haiku used |
 | P4-11 | OPUS | Policy hooks 1: role allowlists, `run_command` denylist (A6), Editor non-test rule | §11.1, §9.1 | P4-07 | Tests first: deny and allow cases for each |
 | P4-12 | OPUS | Policy hooks 2: test-file writes only in `test_touch`, never delete tests, H4 workflows | H3, H4 | P4-11, P2-15 | Tests first: deny and allow cases for each |
-| P4-13 | OPUS | H8 flag policy (A11) | H8, FR-8 | P4-11 | `--force`, `--legacy-peer-deps`, `--no-verify` denied in `install_deps`, `run_command` and bump without a plan justification for that flag; allowed with one |
-| P4-14 | OPUS | Minimal gitleaks redaction post-hook on every tool output (A3) | §9.3, §11.3 | P4-07 | A planted token in tool output never reaches the runtime |
+| P4-13 | OPUS | H8 flag policy (A11) | H8, FR-8 | P4-11 | `--force`, `--legacy-peer-deps`, `--no-verify` denied in `install_deps`, `run_command` and bump without a plan justification for that flag, allowed with one; the same options set via `.npmrc`, `.yarnrc*`, workspace `pip.conf` or `npm_config_*`/`PIP_*` are denied; cheating fixture for the config-file route |
+| P4-14 | OPUS | Minimal gitleaks redaction of every tool output and every model input (A3) | §9.3, §11.3 | P4-07 | A token planted in tool output, and one planted in a prompt built from repo content, never reach the runtime |
 | P4-15 | OPUS | Editor and Diagnoser prompts + schemas with `confidence`; `<untrusted_repo_content>` wrapping; H6; Diagnoser input ≤ 8k tokens | §8.2, §8.3, FR-12 | P4-02, P3-12 | Schema tests; prompt snapshots; scripted FakeRuntime repair |
-| P4-16 | OPUS | `BudgetManager` (B2): Σ-over-turns estimate, per-tool-call guard, attempts 6/40, time excluding pauses | NFR-1/2/3, US-5, H7 | P3-05 | Property test: overshoot ≤ one turn; pre-check refuses; paused time excluded; the 7th attempt on a step is refused |
-| P4-17 | OPUS | Minimal repair loop: outcome scoring (C1), no-progress, escalate-immediately (C7) | FR-13, §8.3, §7.4 | P4-12…16 | FakeRuntime scenarios: success; no progress after 3 identical signature sets; budget exhaustion; escalate-immediately; termination reason recorded |
-| P4-18 | SONNET | UsageLimitError → PAUSED_LIMIT → export → `mpilot resume` (B5) | FR-21, US-6 | P4-17, P2-04 | Pause mid-attempt destroys the sandbox; resume finishes; completed calls not repeated; StickyState and counters survive |
-| P4-19 | SONNET | Minimal integrity: (b), (c), baseline test-file hashes unchanged, no diff under `.github/workflows/**` | §11.2, H3, H4 | P3-13 | Deleted test, lower count, edited test file or workflow change → blocked |
-| P4-20 | SONNET | GitHub credentials (A10): PAT provider with a repo list; H1 checks (A9) | §11.3 (1), §11.6, H1 | P1-03 | Token refused for repos off the list; default, protected and non-`mpilot/*` branches refused |
-| P4-21 | SONNET | Push from the mirror (refspec, `GIT_ASKPASS`) + idempotent draft PR + minimal body | FR-16, H1, H2 | P4-20, P3-06 | respx tests; a rerun updates the existing PR; the token never appears in `.git/config` or argv |
+| P4-16 | OPUS | `BudgetManager` (B2): Σ-over-turns estimate, per-tool-call guard, attempts 6/40, time excluding pauses | NFR-1/2/3, US-5, H7 | P3-05 | Property test: overshoot ≤ one turn; `max_turns` clamped to what fits, refused only if one turn doesn't fit; paused time excluded; the 7th attempt on a step is refused; turn/token/time cap → END_BUDGET_EXCEEDED, exit 4 |
+| P4-17 | OPUS | Minimal repair loop: outcome scoring (C1), no-progress, escalate-immediately (C7) | FR-13, §8.3, §7.4 | P4-12…16 | FakeRuntime scenarios: success; no progress after 3 identical signature sets; attempt cap → ESCALATED (`BUDGET_EXHAUSTED`); escalate-immediately; every non-success ending except rejected/cancelled writes `report.md`; termination reason recorded |
+| P4-18 | SONNET | UsageLimitError → PAUSED_LIMIT → export → `mpilot resume` (B5) | FR-21, US-6 | P4-17, P2-04 | Pause mid-attempt destroys the sandbox and exits 5; resume finishes; completed calls not repeated; StickyState and counters survive |
+| P4-19 | OPUS | Minimal integrity on the final verification run: (a), (b), (c), (g), no new or changed test files or test configs (classifier over the host diff), no diff under `.github/workflows/**` | §11.2, H3, H4 | P3-13, P2-15 | Tests first: failing P0 test, P0 test missing from the run (excluded or renamed), JUnit/exit-code mismatch, deleted test, lower count, unresolved target, edited test file, added `conftest.py` and workflow change → each blocked |
+| P4-20 | OPUS | GitHub credentials (A10): PAT provider with a repo list; H1 checks (A9) | §11.3 (1), §11.6, H1 | P1-03 | Token refused for repos off the list; default, protected and non-`mpilot/*` branches refused |
+| P4-21 | SONNET | Push from the mirror (refspec, `GIT_ASKPASS`) + idempotent draft PR + minimal body | FR-16, H1, H2 | P4-20, P3-06 | respx tests; a rerun updates the existing PR; the token never appears in `.git/config` or argv; a push of any commit other than the final-verified one is refused |
 | P4-22 | SONNET | Cassette recording in the real runtime, secret scan before write (B6) | §18.7 | P4-09, P1-11 | A recorded cassette replays with identical results |
 | P4-23 | OPUS | Real e2e: Python repo → draft PR on a PuruSaluja test repo (owner-triggered) | §16.4 P4 DoD | P4-01…22 | Baseline → bump → agent fix → green → draft PR |
 | P4-24 | OPUS | Real e2e: Node repo → draft PR (owner-triggered) | §16.4 P4 DoD | P4-23 | Same for Node |
@@ -148,7 +152,7 @@ How to read it:
 | P5-10 | OPUS | `--approve-plan` + `mpilot approve` (AWAITING_APPROVAL, END_REJECTED) | FR-7, CP-1, US-2 | The run blocks until approved; reject → END_REJECTED; interrupt → exit 130 (C6) |
 | P5-11 | OPUS | Router v1 part 1: the 8 tier-escalation triggers + stickiness | FR-22, §8.4 | A unit test per trigger; never de-escalates |
 | P5-12 | OPUS | Router v1 part 2: strict effort rules + effort escalation | FR-22, §8.4 | A unit test per medium condition and per effort trigger; property tests for every invariant |
-| P5-13 | OPUS | Loop guards: oscillation (diff hash), regression revert-to-best (C1) | FR-13, §7.4 | Scripted oscillation and regression scenarios |
+| P5-13 | OPUS | Loop guards: oscillation (diff hash), regression revert-to-best (§7.4) from host attempt refs | FR-13, §7.4, §9.5 | Scripted oscillation and regression scenarios; revert restores the best attempt's tree exactly |
 | P5-14 | SONNET | Migration notes (≤ 2k), failure history, escalation `report.md`, WIP branch, `needs-human` PR only with `--pr-on-failure` | FR-17, §10.1 | Report lists failing tests, top 3 hypotheses, attempts, budget; no PR without the flag |
 | P5-15 | OPUS | Prompt tuning on React 17→18 fixtures (owner-triggered) | §16.4 P5 | L3-interim (D10) on ≥ 1 repo |
 | P5-16 | OPUS | Prompt tuning on Pydantic v1→v2 fixtures | §16.4 P5 | L3-interim on ≥ 1 repo |
@@ -157,10 +161,10 @@ How to read it:
 ### Phase 6: Integrity and safety (provisional)
 | ID | Tag | Task | Refs | Acceptance |
 |---|---|---|---|---|
-| P6-01 | OPUS | Gate checks (a), (b), (c), (g) on the `final_verify` result + `test_touch` hunk mapping | §11.2 | Tests first. (a): any failure in `P0 \ baseline_flaky` blocks. (b): executed count (D9) below baseline blocks. (c): deleted test file blocks. (g): unresolved target blocks. Hunks outside `test_touch` steps block |
-| P6-02 | OPUS | Gate check (d) for Python: skip/xfail markers and assertion changes (regex + AST) | §11.2 (d) | Every Python marker in §11.2 detected; changed assertion constants detected |
+| P6-01 | OPUS | Gate checks (a), (b), (c), (g), (i) on the final verification run + `test_touch` hunk mapping | §11.2, §9.5 | Tests first. (i): mirror tree ≠ walked tree blocks. (a): a P0 test missing from the final run blocks. (a): any failure in `P0 \ baseline_flaky` blocks. (b): executed count (D9) below baseline blocks. (c): deleted test file blocks. (g): unresolved target blocks. Hunks outside `test_touch` steps block |
+| P6-02 | OPUS | Gate check (d) for Python: skip/xfail markers and assertion changes (regex + AST) | §11.2 (d) | Every Python marker in §11.2 detected; changed assertion constants detected, including inside `test_touch` hunks |
 | P6-03 | OPUS | Gate check (d) for JS/TS | §11.2 (d) | `it.skip`, `describe.skip`, `test.only`, `xit` and changed `expect` constants detected |
-| P6-04 | OPUS | Gate check (e): test configs (full D2 list) | §11.2 (e) | Exclusion, threshold and setup-file changes blocked unless a plan step names them (then flagged) |
+| P6-04 | OPUS | Gate check (e): test configs (full D2 list) | §11.2 (e) | Exclusions, narrowed discovery, skipping setup files and lowered thresholds always blocked, even if a plan step names them; plan-named format/key migrations allowed and flagged |
 | P6-05 | OPUS | Gate check (f): coverage (2 pp gate, 5 pp reported, D4) | §11.2 (f) | A > 2 pp drop blocks; coverage lost since baseline blocks |
 | P6-06 | OPUS | Gate check (h): removed-API usages (D3) | §11.2 (h) | A remaining usage of a curated removed API blocks |
 | P6-07 | SONNET | Cheating-fixture suite: every FR-14 case plus variants (incl. the A2 hiding tricks) | FR-14 | 100% blocked |
@@ -177,7 +181,7 @@ How to read it:
 | P7-01 | OPUS | Critic: fresh context, hunk mapping, masking-pattern checks, cites files it read itself | FR-15, §8.2, §8.5 | Scripted diffs with masking patterns are flagged |
 | P7-02 | OPUS | Revise loop (max 1) in the state machine | FR-15, §7.4 | Second revise → ESCALATED; verdict in the PR |
 | P7-03 | SONNET | PR Writer + §13.4 template (F4), H8 justifications, routing stats | FR-16, §13.4, H8 | Template validation; deterministic sections snapshot-tested |
-| P7-04 | SONNET | Crash resume (kill -9 mid-run) | NFR-4 | Kill-and-resume completes a run |
+| P7-04 | SONNET | Crash resume (kill -9 mid-run): restore the last attempt snapshot, restart the interrupted attempt | NFR-4, §10.1 | Kill-and-resume completes a run; partial effects of the in-flight tool call are gone |
 | P7-05 | SONNET | OTel spans + Langfuse export (E4) | NFR-7, FR-18 | Spans for every model and tool call; redacted |
 | P7-06 | SONNET | Run replay and export | FR-18, G6 | A stored run replays deterministically |
 | P7-07 | OPUS | **Phase 7 gate** | §16.4 P7 DoD | A full run shows Critic verdict, attestation, Opus share and trace link in the PR; true L3 re-checked (D10) |

@@ -17,7 +17,7 @@ The signatures assume the proposals in `docs/decisions.md`, referenced below as 
 
 Data paths:
 - **Model → tool:** the model asks for a tool → in-process MCP server → `ToolHost` → pre-policy → `Tool.run` → post-policy (redaction) → back to the model. Read and edit tools act on `Workspace` on the host (A1); everything that executes runs through `Sandbox.exec`.
-- **Diff, gate and PR (A2):** the host walks the workspace through `Workspace` (ignoring sandbox git state) → diffs it against the mirror at `base_sha` → applies it in the mirror and commits → checks that the mirror tree equals the walked tree → runs the final full suite and gate checks (a)/(b) in a **fresh sandbox built from that mirror commit** → `VcsAdapter.push_branch` (H1 checked again inside the adapter).
+- **Diff, gate and PR (SPEC §9.5):** the host records snapshots as mirror refs (phases, attempts) → builds one mirror commit per phase from consecutive snapshots → checks that the mirror tree equals the walked tree → runs the **whole pipeline in a fresh sandbox built from that commit**, which every success signal and gate check judges → `VcsAdapter.push_branch` of exactly that commit (H1 checked again inside the adapter).
 - **Child processes:** every subprocess (Docker, git, the SDK, tree-sitter) starts through `core.spawn` with an explicit env. The GitHub token is removed from the orchestrator's own env at startup (A10).
 
 ## 2. Package layout (adds to SPEC §15)
@@ -49,11 +49,12 @@ class RunStatus(StrEnum):  # SPEC §7.4, one member per state plus terminal END_
     CODEMODS_APPLIED; REPAIR_LOOP; INTEGRITY_CHECK; REVIEW; PR_OPENED; ESCALATED; PAUSED_LIMIT;
     END_SUCCESS; END_BASELINE_RED; END_REJECTED; END_BUDGET_EXCEEDED; END_ERROR; END_ESCALATED;
     END_CANCELLED                                                  # C6 [SPEC]
-class FailureCategory(StrEnum): ...  # exactly the 16 entries of SPEC §14.5
+class FailureCategory(StrEnum): ...  # exactly the entries of SPEC §14.5 (17 in v1.4, incl. CANCELLED)
 class Outcome(StrEnum): IMPROVED; SAME; REGRESSED; GREEN          # C1
 class NetworkMode(StrEnum): NONE = "none"; REGISTRY = "registry"
 class ExitCode(IntEnum): SUCCESS=0; FAILED=1; INPUT_ERROR=2; BASELINE_RED=3; BUDGET_EXCEEDED=4; PAUSED=5
-def exit_code_for(status: RunStatus) -> ExitCode: ...              # C6 matrix, total over terminal states
+def exit_code_for(status: RunStatus) -> ExitCode: ...              # C6 matrix: every terminal state + PAUSED_LIMIT (5);
+                                                                  # the CLI returns 130 when interrupted in AWAITING_APPROVAL
 
 @dataclass(frozen=True)
 class Usage: input_tokens: int; output_tokens: int; cache_read_tokens: int; cache_write_tokens: int
@@ -201,7 +202,9 @@ class ResourceLimits(BaseModel, frozen=True):
 class SandboxSpec(BaseModel, frozen=True):
     image_digest: str; limits: ResourceLimits; workspace_host_path: Path
     env: Mapping[str, str]             # allowlisted keys only; validated
-    from_commit: str | None = None     # A2: build /workspace from this mirror commit (final verification)
+    from_commit: str | None = None     # build /workspace from this mirror commit (final verification)
+    final_cache: Literal["fresh", "hash_verified"] | None = None   # set only for final verification
+    # The driver mounts caches read-only in the work container and read-write in install containers (SPEC §9.3).
     prefer_runtime: Literal["runsc", "runc"] = "runsc"
 
 class ExecResult(BaseModel, frozen=True):
@@ -233,7 +236,9 @@ class Workspace(Protocol):                                   # host side, A1: op
     def write_text(self, rel: str, content: str) -> FileDiff: ...
     def delete(self, rel: str) -> FileDiff: ...
     def list_dir(self, rel: str, depth: int) -> list[DirEntry]: ...
-    def walk_tree(self) -> TreeSnapshot: ...                 # A2: path → (mode, sha256); ignores .git, never follows links
+    def walk_tree(self, exclude: ArtifactRules) -> TreeSnapshot: ...   # path → (mode, sha256); ignores .git, never follows links;
+                                                             # exclusions from mirror .gitignore@base_sha + fixed list only
+    def restore(self, snapshot_ref: str, mirror: Path) -> None: ...  # write tree from refs/mpilot/attempt/<n> (revert, crash)
 ```
 
 ## 8. Gate checks (`policy/`)
@@ -241,11 +246,11 @@ class Workspace(Protocol):                                   # host side, A1: op
 ```python
 class GateInput(BaseModel, frozen=True):
     baseline: Baseline                                       # incl. P0 ids, flaky ids, test-file hashes
-    final_tests: TestResult                                  # from the fresh sandbox at mirror_commit (A2)
+    final: FinalVerification                                 # whole pipeline from mirror_commit (SPEC §9.5); all checks judge this
     diff: WorkspaceDiff                                      # host-computed: walk_tree vs mirror@base_sha (A2)
     tree: TreeSnapshot; mirror_commit: str                   # mirror tree must equal walked tree
     plan: Plan
-    env: EnvProfile; resolved_versions: dict[str, str]; coverage_pct: float | None   # None when baseline had it ⇒ violation (D4)
+    env: EnvProfile                                          # resolved versions and coverage come from `final` (D4: lost coverage ⇒ violation)
     flag_justifications: dict[str, str]                      # H8 (A11): flag → plan justification
     removed_api_patterns: list[ApiPattern]                   # D3: curated registry list only
 
@@ -260,6 +265,12 @@ class TestFileClassifier(Protocol):                          # D2
     def is_test_file(self, rel_path: str) -> bool: ...
     def is_test_config(self, rel_path: str) -> bool: ...
 ```
+
+class Mirror(Protocol):                                      # host-owned clone, never mounted (SPEC §9.5)
+    path: Path; base_sha: str
+    def record_snapshot(self, ref: str, tree: TreeSnapshot, ws: Workspace) -> None: ...  # refs/mpilot/phase/<n>, attempt/<n>
+    def build_phase_commits(self, refs: Sequence[str]) -> str: ...   # diffs between consecutive snapshots; returns head sha
+    def tree_equals(self, sha: str, tree: TreeSnapshot) -> bool: ...  # gate check (i)
 
 ## 9. VCS (`vcs/`)
 
@@ -325,8 +336,14 @@ class EnvDetector(Protocol):
 class Verifier(Protocol):
     async def verify(self, sb: Sandbox, env: EnvProfile, *, manifests_changed: bool,
                      selector: Sequence[str] | None, full: bool) -> VerifyResult: ...
-    async def final_verify(self, driver: SandboxDriver, env: EnvProfile, mirror_commit: str) -> TestResult: ...
-        # A2: fresh sandbox from the mirror commit; this result is the one the gate judges (C2)
+    async def final_verify(self, driver: SandboxDriver, env: EnvProfile, mirror_commit: str) -> FinalVerification: ...
+        # SPEC §9.5: fresh sandbox from the mirror commit, fresh or hash-verified cache; install → build →
+        # typecheck → full suite, then one extra instrumented coverage run. Success, L0–L2 and every gate
+        # check judge only this.
+
+class FinalVerification(BaseModel, frozen=True):
+    mirror_commit: str; verify: VerifyResult; tests: TestResult
+    resolved_versions: dict[str, str]; coverage_pct: float | None; cache: Literal["fresh", "hash_verified"]
 
 def trim_log(raw: str, *, max_lines: int = 60) -> str: ...  # §10.3: strip ANSI/progress bars, head/tail, dedupe
 

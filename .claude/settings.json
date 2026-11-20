@@ -1,0 +1,6 @@
+{
+  "env": {
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "claude-sonnet-5-5",
+    "ANTHROPIC_SMALL_FAST_MODEL": "claude-sonnet-5-5"
+  }
+}

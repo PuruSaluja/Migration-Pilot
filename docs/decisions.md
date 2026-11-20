@@ -1,6 +1,8 @@
 # Ambiguities and proposed resolutions (P0-1)
 
-Status: **PROPOSED, awaiting owner approval.** Revised once after the spec-reviewer pass.
+Status: **APPROVED by the owner 2026-11-19** and written into SPEC v1.4 (task P0-2). Owner answers: D7 → 16 GB PC, WSL raised to 12 GB (Q10); D6 → loopback `runs/` approved; A4 → background model pinned to Sonnet in `.claude/settings.json`; B1 → no API key ever (Q9). All other proposals approved as written.
+
+> **SPEC.md v1.4 supersedes this file where they differ.** The three spec-reviewer passes tightened several items; see the §20 rows marked "second review" and "third review".
 Each item says what in SPEC.md is unclear, missing or in conflict, and what I propose.
 **[CALL]** marks items that need your explicit decision. The rest are defaults I'll use unless you object.
 **[SPEC]** marks items that change a [REC] decision, a requirement or a phase DoD. After approval they go into SPEC.md and §20 (task P0-2).
@@ -33,10 +35,10 @@ Proposal:
 1. The host keeps a separate **mirror** clone (`runs/<id>/mirror`) that is never mounted. All host git runs with `GIT_CONFIG_NOSYSTEM=1`, `GIT_CONFIG_GLOBAL=/dev/null`, a temp HOME, `core.hooksPath=/dev/null`, `core.fsmonitor=false`, no LFS filters, and a minimum git version check.
 2. **The host computes the diff itself.** It walks the workspace through `Workspace`, ignoring sandbox git state, and compares the tree with the mirror at `base_sha`. Test-file hashes come from the same walk. Any new file the D2 classifier matches is flagged, even if it is gitignored.
 3. The diff is applied in the mirror and committed. The mirror tree must then **equal** the host-walked workspace tree for every non-artifact path, or the gate fails.
-4. **The final full suite, and gate checks (a) and (b), run in a fresh sandbox built from the exact mirror commit that will be pushed.**
+4. **The whole pipeline (install → build → typecheck → full suite) runs in a fresh sandbox built from the exact mirror commit that will be pushed, and every success signal and gate check judges only that run** (SPEC §9.5).
 5. Pushes use an explicit refspec, `refs/heads/mpilot/<x>`. The token goes in through `GIT_ASKPASS` and never appears in `.git/config` or the URL.
 
-The `attempt/<n>` branches (§10.1) stay in the workspace git and are only used for revert-to-best.
+Attempt and phase snapshots are host-owned mirror refs (SPEC §9.5, §10.1), not sandbox git branches.
 Intake clone hardening: no hooks, no submodules, no LFS smudge, `protocol.file.allow=never`.
 
 **A3 [CALL][SPEC] Move tool-output secret redaction from Phase 6 to Phase 4.**
@@ -94,14 +96,14 @@ The checks use the repo's default branch, the branch's `protected` flag and the 
 **B1 [CALL][SPEC] What if effort can't be set per call?**
 FR-22 depends on setting effort per call (Appendix A). Proposal:
 - **Can't be set per call, but the SDK's default is verifiably high:** force `effort_policy = all_high`, record a warning, and log every call as `high`.
-- **Can't be set at all, and the default can't be verified:** `LLMCall.effort` can't be recorded truthfully. P4-01 stops and asks you. The fallback is `MessagesRuntime` with an API key, which costs money (NFR-11).
+- **Can't be set at all, and the default can't be verified:** `LLMCall.effort` can't be recorded truthfully. P4-01 stops and asks you. (Superseded by Q9: no API-key fallback.)
 
 A call that ran at high is never logged as medium.
 
 **B2 Budget definitions.**
 - **Turn:** one model response, counted across every role, including the Explorer.
 - **Tokens for the cap:** `input + output (thinking included) + cache_write + ceil(0.1 × cache_read)`.
-- **Pessimistic pre-check:** the estimate sums over the call's `max_turns` turns, each costing the prompt plus the accumulated tool output (capped per tool) plus the output ceiling, because each agent turn re-sends its context. `max_turns` is clamped to the remaining turns.
+- **Pessimistic pre-check:** the estimate sums over the call's turns, each costing the prompt plus the accumulated tool output (capped per tool) plus the output ceiling, because each agent turn re-sends its context. `max_turns` is clamped to the largest number of turns whose estimate fits; the call is refused only if one turn doesn't fit.
 - **Mid-call stop:** a PreToolUse budget check ends a running call as soon as a cap is crossed, so the overshoot is bounded by one turn. That is stricter than US-5's one call.
 
 **B3 Token estimate without a tokenizer.**
@@ -134,7 +136,7 @@ A cassette records traffic at the `AgentRuntime` boundary as JSONL: role-call re
 Stickiness is scoped per step. Calls outside any step (Analyzer, Planner, PR Writer) are scoped per run phase.
 `has_changelog_mapping` (Editor) and `error_maps_to_changelog` (Diagnoser) are separate inputs.
 
-**B10 Router v0 (Phase 4) emits only Opus/high for the routed roles** (Editor, Diagnoser, Analyzer) and never emits medium. A test asserts this. The full rules arrive in Router v1 (P5-09).
+**B10 Router v0 (Phase 4) emits only Opus/high for the routed roles** (Editor, Diagnoser, Analyzer) and never emits medium. A test asserts this. The full rules arrive in Router v1 (P5-11, P5-12).
 
 ## C. Orchestrator and repair loop
 
@@ -231,8 +233,8 @@ For GitHub URLs, an unauthenticated `GET /repos/{o}/{r}` gives the size before c
 - The "executed test count" for (b) is passed + failed + errors, excluding skipped.
 
 **D10 [SPEC] Phase-ordering conflicts in the spec.**
-- **Phase 5 DoD:** it asks for L3, which needs the full gate (Phase 6), and "traces", which need OTel (Phase 7). Proposal: Phase 5 uses **L3-interim**, meaning the Phase 4 minimal gate (b), (c), unchanged test-file hashes and no workflow diff. "Visible in traces" there means RoutingDecisions shown by `mpilot logs`. True L3 is re-checked at the Phase 6 and Phase 7 gates.
-- **P9-12 effort guard:** it needs L4 rubric scores, which come from the Phase 10 review. Proposal: the blinded L4 review of the 15-task ablation subset moves into Phase 9 (P9-12a), before the guard is applied.
+- **Phase 5 DoD:** it asks for L3, which needs the full gate (Phase 6), and "traces", which need OTel (Phase 7). Proposal: Phase 5 uses **L3-interim**, meaning the Phase 4 minimal gate on the final verification run: (a), (b), (c), (g), no new or changed test files or test configs, and no workflow diff. "Visible in traces" there means RoutingDecisions shown by `mpilot logs`. True L3 is re-checked at the Phase 6 and Phase 7 gates.
+- **P9-12 effort guard:** it needs L4 rubric scores, which come from the Phase 10 review. Proposal: the blinded L4 review of the 15-task ablation subset moves into Phase 9 (P9-12), before the guard is applied.
 
 ## E. Tooling and tests
 

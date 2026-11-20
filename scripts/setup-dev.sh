@@ -65,6 +65,35 @@ if ! command -v gitleaks >/dev/null 2>&1; then
   sudo apt-get install -y -q gitleaks
 fi
 
+# --- Fixed-size filesystem for run files (SPEC §9.3 disk limit) --------------
+# Workspaces, mirrors, artifacts and package caches live here, so they can never
+# grow past this image's size. Sparse: only space actually used takes room on disk.
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+RUNS_DIR="${MPILOT_RUNS_DIR:-$REPO_ROOT/runs}"
+RUNS_IMG=/var/lib/mpilot/runs.img
+RUNS_SIZE="${MPILOT_RUNS_SIZE:-100G}"
+if ! findmnt -n --mountpoint "$RUNS_DIR" >/dev/null 2>&1; then
+  echo ">> Setting up ${RUNS_SIZE} fixed-size filesystem at $RUNS_DIR"
+  mkdir -p "$RUNS_DIR"
+  if [[ -n "$(ls -A "$RUNS_DIR")" ]]; then
+    echo "ERROR: $RUNS_DIR is not empty; mounting over it would hide its files. Move them away first." >&2
+    exit 1
+  fi
+  sudo install -d -m 0755 /var/lib/mpilot
+  if [[ "$(sudo blkid -p -s TYPE -o value "$RUNS_IMG" 2>/dev/null)" != ext4 ]]; then
+    sudo rm -f "$RUNS_IMG"                 # missing or half-made: (re)create it
+    sudo truncate -s "$RUNS_SIZE" "$RUNS_IMG"
+    sudo mkfs.ext4 -q -F -m 0 "$RUNS_IMG"
+  fi
+  # Exactly one fstab line for this mount point.
+  if ! awk -v mp="$RUNS_DIR" '$2 == mp { found = 1 } END { exit !found }' /etc/fstab; then
+    echo "$RUNS_IMG $RUNS_DIR ext4 loop,nofail,nodev,nosuid,discard 0 0" | sudo tee -a /etc/fstab >/dev/null
+  fi
+  sudo systemctl daemon-reload
+  sudo mount "$RUNS_DIR"
+  sudo chown "$(id -u):$(id -g)" "$RUNS_DIR"
+fi
+
 # --- Smoke test --------------------------------------------------------------
 echo ">> Smoke test: container under gVisor"
 if sudo docker run --rm --runtime=runsc busybox:1.36 uname -a; then

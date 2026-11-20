@@ -45,6 +45,16 @@ if native docker; then
   fi
 else bad "native docker missing (run scripts/setup-dev.sh)"; fi
 
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+runs_dir="${MPILOT_RUNS_DIR:-$repo_root/runs}"
+runs_src="$(findmnt -n -o SOURCE --mountpoint "$runs_dir" 2>/dev/null || true)"
+if [[ "$runs_src" == /dev/loop* ]] && losetup -n -O BACK-FILE "$runs_src" 2>/dev/null | grep -qx /var/lib/mpilot/runs.img; then
+  pass "runs/ on fixed-size filesystem ($(df -h --output=size "$runs_dir" | tail -1 | tr -d ' '))"
+else bad "runs/ is not on the fixed-size image /var/lib/mpilot/runs.img (run scripts/setup-dev.sh)"; fi
+mem_gb=$(awk '/MemTotal/ {printf "%d", $2/1024/1024}' /proc/meminfo)
+if (( mem_gb >= 11 )); then pass "WSL memory ${mem_gb} GiB"
+else bad "WSL memory ${mem_gb} GiB; set memory=12GB in %UserProfile%\\.wslconfig (SPEC Q10)"; fi
+
 echo "Required from Phase 4+ (PRs, secret scanning)"
 if native gh; then
   pass "gh $(gh --version | head -1 | awk '{print $3}')"
