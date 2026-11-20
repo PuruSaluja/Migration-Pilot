@@ -1,0 +1,78 @@
+# Development requirements
+
+What a machine needs to build and run MigrationPilot, and which phase first needs it.
+Set up once with `bash scripts/setup-dev.sh`, then verify with `bash scripts/check-env.sh`.
+
+## Dev host
+
+| Item | Value |
+|---|---|
+| OS | Ubuntu 24.04 on WSL2 (Windows 11), systemd enabled |
+| Repo location | `~/migrationpilot` on the Linux filesystem. Never work under `/mnt/c` (slow I/O, permission and line-ending drift) |
+| Editor | VS Code with the WSL extension (`cd ~/migrationpilot && code .`) |
+| Docker | **Native Docker Engine inside WSL**, not Docker Desktop. gVisor needs the `runsc` binary installed next to the engine and registered in its `daemon.json`. That's simple with a native engine and awkward inside Docker Desktop's own VM. Keep Docker Desktop's WSL integration **off** for this distro so the two don't fight over `docker` |
+
+## System tools
+
+| Tool | Version | Needed from | Why | Installed by |
+|---|---|---|---|---|
+| git | any recent | Phase 0 | VCS | Ubuntu (present) |
+| uv | ≥ 0.13 | Phase 1 | Python toolchain, venv, lockfile | present (`~/.local/bin`) |
+| Python | 3.12 | Phase 1 | Project language (SPEC §15) | system / `uv python install 3.12` |
+| Docker Engine + buildx + compose | current stable | Phase 2 | Sandbox (§9.3); compose for self-hosted Langfuse (Phase 7) | `setup-dev.sh` |
+| gVisor `runsc` | current release | Phase 2 | Default sandbox runtime on Linux (§9.2). If it fails on the WSL kernel, use runc with a recorded warning (NFR-10) | `setup-dev.sh` |
+| GitHub CLI `gh` | current | Phase 4 | Creating test repos/forks, checking PATs by hand. The product itself uses githubkit + a fine-grained PAT (§11.6), not `gh` | `setup-dev.sh` |
+| gitleaks | ≥ 8.18 | Phase 6 | Secret scanning of diffs, PR bodies, model inputs (§11.3) | `setup-dev.sh` |
+| Claude Code | current | Phase 0 | Build-time agent (this session) | present |
+
+**Not needed on the host:** Node, npm/pnpm/yarn, Java, Maven, Gradle, ripgrep, the tree-sitter CLI and codemod tools.
+They all live in the sandbox images (`images/{node,python,jdk}/Dockerfile`, §9.3), because untrusted repo code never runs on the host (NFR-6).
+Windows `node`/`npm` showing up on the WSL `PATH` is harmless, but never rely on it.
+
+## Python packages
+
+These go into `pyproject.toml` in the Phase 1 scaffold task. `uv.lock` pins exact versions, and there is no `requirements.txt`, so the dependency list lives in one place.
+Before pinning, re-check every version and API at build time (SPEC Appendix A).
+
+**Runtime**
+
+| Package | Purpose (SPEC §15) |
+|---|---|
+| `pydantic` ≥ 2 | Data models (§12) |
+| `pydantic-settings` | `mpilot.toml` / env config loader |
+| `sqlalchemy` ≥ 2, `alembic` | SQLite store (WAL) and migrations |
+| `typer` | `mpilot` CLI (§13.1). Proposed; confirm in P0-1 |
+| `fastapi`, `uvicorn`, `sse-starlette` | REST API and SSE (§13.2) |
+| `jinja2` | Web UI templates (HTMX and diff2html are vendored static assets, not Python packages) |
+| `docker` | Docker SDK for the sandbox driver |
+| `claude-agent-sdk` | Default `AgentSDKRuntime` (§8.1) |
+| `anthropic` | `MessagesRuntime` (§8.1) |
+| `tree-sitter`, `tree-sitter-language-pack`, `networkx` | Repo map (§10.2) |
+| `githubkit` | GitHub REST adapter (§11.6) |
+| `opentelemetry-api`, `opentelemetry-sdk`, `opentelemetry-exporter-otlp` | Tracing → Langfuse via OTLP (NFR-7) |
+| `pyyaml` | `codemods/registry.yaml`, `bench/suites/v1.yaml`, CI-config parsing |
+| `httpx` | Registry/changelog fetches (knowledge layer) |
+
+**Dev**
+
+| Package | Purpose |
+|---|---|
+| `ruff` | Lint and format |
+| `mypy` | `--strict` type checking |
+| `pytest`, `pytest-cov` | Tests and the ≥ 80% coverage gates |
+| `syrupy` | Snapshot tests |
+| `pre-commit` | Runs the checks before each commit |
+| `types-pyyaml` | Type stubs for mypy |
+
+## Accounts and credentials
+
+| Item | Needed from | Notes |
+|---|---|---|
+| Claude Pro subscription | Phase 4 (first real call) | Tests never call real Claude; they use `FakeRuntime` or cassettes |
+| GitHub account for test repos and forks | Phase 4 | Still open (SPEC §17.3). Decide before Phase 4 |
+| Fine-grained PAT: Contents write + Pull requests write, scoped to the test repos only | Phase 4 | Never the Workflows permission (§11.6). Stored on the host only, never in the sandbox |
+
+## Hardware (this machine)
+
+8 CPUs, 7 GiB RAM visible to WSL, ~950 GB free disk. That's enough for bench parallelism 1 (NFR-9).
+If image builds or Opus runs feel memory-starved, raise the WSL memory limit in `%UserProfile%\.wslconfig` (`[wsl2]` → `memory=12GB`).
