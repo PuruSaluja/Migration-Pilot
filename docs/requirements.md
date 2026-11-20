@@ -84,4 +84,4 @@ memory=12GB
 ```
 
 Then run `wsl --shutdown` in PowerShell and reopen Ubuntu.
-Run files (workspaces, mirrors, artifacts, package caches) live in `runs/` on a fixed-size 100 GB filesystem image created by `setup-dev.sh` (sparse, so only used space takes room). Containers can't write anywhere else (read-only root, capped `/tmp`). Docker's own image storage stays in `/var/lib/docker`.
+Run files (workspaces, mirrors, artifacts, package caches) live in `runs/` on a fixed-size 50 GB filesystem image created by `setup-dev.sh` (sparse, so only used space takes room). Containers can't write anywhere else (read-only root, capped `/tmp`). Docker's own image storage stays in `/var/lib/docker`.

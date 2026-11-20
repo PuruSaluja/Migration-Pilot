@@ -71,7 +71,7 @@ fi
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 RUNS_DIR="${MPILOT_RUNS_DIR:-$REPO_ROOT/runs}"
 RUNS_IMG=/var/lib/mpilot/runs.img
-RUNS_SIZE="${MPILOT_RUNS_SIZE:-100G}"
+RUNS_SIZE="${MPILOT_RUNS_SIZE:-50G}"
 if ! findmnt -n --mountpoint "$RUNS_DIR" >/dev/null 2>&1; then
   echo ">> Setting up ${RUNS_SIZE} fixed-size filesystem at $RUNS_DIR"
   mkdir -p "$RUNS_DIR"
