@@ -27,7 +27,8 @@ src/mpilot/
   core/        types.py (enums, ids), clock.py, errors.py, tokens.py (B3 estimator), spawn.py (A10)
   models/      domain.py (Pydantic, §12), artifacts.py (trees, diffs, blobs, FinalVerification,
                ApiPattern, ExportManifest), state.py (Checkpoint, BudgetState, failure history),
-               tables.py (SQLAlchemy), store.py (RunStore impl)
+               tables.py (SQLAlchemy, P1-09), migrate.py + migrations/ (Alembic, shipped in the
+               package, no alembic.ini), store.py (RunStore impl, P1-10)
   config.py    settings + NFR-12 validation + config_hash
   orchestrator/ base.py (interfaces), states.py (pure transition table), machine.py, budget.py,
                checkpoint.py, loop.py
@@ -512,6 +513,38 @@ class Checkpoint(BaseModel, frozen=True):            # after every tool call (NF
     def covers(self, previous: Checkpoint) -> list[str]: ...     # nothing may go backwards (B5): sticky
         # flags, attempt counters, spent, active time, failure-history attempts and tried hypotheses
 ```
+
+### Tables (`models/tables.py`, P1-09)
+
+Each table keeps the **whole Pydantic model as JSON in `doc`** (reads return it, so a round trip is
+exact) plus plain columns copied from the model for what is queried, joined, ordered or
+constrained. The columns are derived: the store writes both from one model object. A test checks
+that every column is a field of its model (or listed as derived). Nested §12 classes live inside
+their parent's `doc`.
+
+| Table | Stores | Kind |
+|---|---|---|
+| `runs` | `Run` (+ nested `MigrationSpec`, `EnvProfile`, budgets, spent) | upserted |
+| `baselines`, `plans`, `pull_requests`, `escalation_reports` | `Baseline`, `Plan` (+ nested `Step`), `PullRequest`, the FR-17 report (`report_md` + `data`; its model comes in P5-14) | one per run, upserted |
+| `checkpoints` | `Checkpoint`, PK `(run_id, seq)` | append-only |
+| `attempts` | `Attempt` (+ nested `Diagnosis`; `signature`, `category` copied out) | append-only |
+| `tool_calls`, `routing_decisions`, `llm_calls` | `ToolCall`, `RoutingDecision`, `LLMCall` (FK to its decision) | append-only |
+| `test_results`, `final_verifications`, `integrity_reports`, `critic_verdicts` | `TestResult`, `FinalVerification`, `IntegrityReport`, `CriticVerdict` | append-only |
+| `migration_notes` | one row per `write_note` call; the current note for a key is its highest `seq` | append-only |
+| `eval_results` | `EvalResult` (bench rows, no run FK) | append-only |
+
+Append-only tables have `seq` (insertion order) and `recorded_at` (the store's `Clock`, UTC). Child
+tables cascade from `runs`. NFR-12 is repeated as CHECK constraints (tier opus/sonnet, effort
+medium/high, never Opus at medium, no "haiku" in a model name), and so are the model invariants
+that fit in SQL (deny reason iff denied, paused state iff `PAUSED_LIMIT`, non-negative counts).
+Types are portable: `JSON` (JSONB on Postgres), timezone-aware UTC datetimes through `UtcDateTime`,
+named constraints. SQLite needs `enable_sqlite_fks(engine)` for foreign keys; P1-10 calls it.
+
+`models/migrate.py` runs the packaged Alembic migrations from code (`upgrade`, `downgrade`, the
+same on an open connection, and `upgrade_sql`/`downgrade_sql` that print the SQL for any dialect
+without a server). `0001_initial_schema` is generated, then frozen (it imports no app code); a
+test compares the migrated schema to `tables.py`, so changing a table without a new revision
+fails the build.
 
 `Clock` is `core/clock.py` (P1-02).
 Test doubles: `DictTable`, `ScriptedOrchestrator`, `SimpleBudget`, `MemoryStore`, `MemoryBus`.
