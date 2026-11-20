@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
+import typer
 from typer.testing import CliRunner
 
 from mpilot.cli import app
+from mpilot.config import Config
 
 # SPEC §13.1, one entry per command line (bench is a sub-app).
 TOP_LEVEL = ["run", "status", "logs", "resume", "cancel", "approve", "detect", "selftest", "bench"]
@@ -77,3 +80,30 @@ def test_stub_exits_1_with_json_log(args: list[str], command: str) -> None:
 def test_every_stub_invocation_covers_a_listed_command() -> None:
     covered = {args[0] for args, _ in STUB_INVOCATIONS}
     assert covered == set(TOP_LEVEL)
+
+
+def test_invalid_config_exits_2_before_any_command(tmp_path: Path) -> None:
+    bad = tmp_path / "bad.toml"
+    bad.write_text("[budget]\nmax_turns = 0\n")
+    result = runner.invoke(app, ["--config", str(bad), "selftest"])
+    assert result.exit_code == 2
+    assert "max_turns" in result.output
+
+
+def test_missing_config_file_exits_2(tmp_path: Path) -> None:
+    result = runner.invoke(app, ["--config", str(tmp_path / "nope.toml"), "selftest"])
+    assert result.exit_code == 2
+
+
+def test_config_flag_is_loaded_for_the_command(tmp_path: Path) -> None:
+    good = tmp_path / "good.toml"
+    good.write_text("[budget]\nmax_turns = 5\n")
+    seen: list[Config] = []
+
+    @app.command("probe-config")
+    def probe(ctx: typer.Context) -> None:
+        seen.append(ctx.obj)
+
+    result = runner.invoke(app, ["--config", str(good), "probe-config"])
+    assert result.exit_code == 0, result.output
+    assert seen[0].budget.max_turns == 5

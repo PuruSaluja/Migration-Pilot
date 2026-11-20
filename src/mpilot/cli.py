@@ -8,13 +8,13 @@ flags come from the config loader (P1-05), so those flags default to `None` here
 from __future__ import annotations
 
 import logging
-import os
 from pathlib import Path
 from typing import Annotated
 
 import typer
 
 from mpilot import __version__
+from mpilot.config import Config, load_config
 from mpilot.core.errors import ConfigError
 from mpilot.core.github_token import load_github_token
 from mpilot.core.log import configure_logging
@@ -36,8 +36,6 @@ bench_app = typer.Typer(
 )
 app.add_typer(bench_app, name="bench")
 
-TOKEN_FILE_ENV = "MPILOT_GITHUB_TOKEN_FILE"  # noqa: S105  (a variable name, not a secret)
-
 RunId = Annotated[str, typer.Argument(help="Run id.")]
 
 
@@ -55,10 +53,18 @@ def _version_callback(value: bool) -> None:
 
 @app.callback()
 def main(
+    ctx: typer.Context,
     log_level: Annotated[
         str,
         typer.Option("--log-level", envvar="MPILOT_LOG_LEVEL", help="Log level (JSON lines)."),
     ] = "INFO",
+    config_file: Annotated[
+        Path | None,
+        typer.Option(
+            "--config",
+            help="Config file (default: $MPILOT_CONFIG, else ~/.config/mpilot/mpilot.toml).",
+        ),
+    ] = None,
     version: Annotated[
         bool,
         typer.Option("--version", callback=_version_callback, is_eager=True, help="Show version."),
@@ -66,20 +72,25 @@ def main(
 ) -> None:
     """MigrationPilot command line."""
     del version  # handled eagerly by the callback
-    # A10: read the GitHub token once and scrub it from the environment before anything else
-    # runs, even logging setup. The env var is removed even when loading fails.
-    # Every other entrypoint (the P8 API server, bench workers) must do the same first.
-    # TODO(P1-05): the token-file path moves into the config loader (`MPILOT_*` env + toml).
-    token_file = os.environ.get(TOKEN_FILE_ENV)
-    token_error: ConfigError | None = None
+    # Startup order matters. A10: the GitHub token is read once and scrubbed from the
+    # environment before anything else runs, even when the config is invalid. Every other
+    # entrypoint (the P8 API server, bench workers) must do the same, first.
+    config: Config | None = None
+    problems: list[ConfigError] = []
     try:
-        load_github_token(token_file=Path(token_file) if token_file else None)
+        config = load_config(config_file=config_file)
     except ConfigError as exc:
-        token_error = exc
+        problems.append(exc)
+    try:
+        load_github_token(token_file=config.github.token_file if config else None)
+    except ConfigError as exc:
+        problems.append(exc)
     configure_logging(log_level.upper())
-    if token_error is not None:
-        logger.error("invalid GitHub token configuration", extra={"error": str(token_error)})
-        raise typer.Exit(code=ExitCode.INPUT_ERROR) from token_error
+    if problems:
+        for problem in problems:
+            logger.error("invalid configuration", extra={"error": str(problem)})
+        raise typer.Exit(code=ExitCode.INPUT_ERROR) from problems[0]
+    ctx.obj = config
 
 
 @app.command()

@@ -1,0 +1,99 @@
+# MigrationPilot configuration. Every value shown is the built-in default (SPEC.md §6 and
+# §8.4), so an empty file behaves the same. Uncomment and edit only what you want to change.
+#
+# Where this file is read from (lowest precedence first):
+#   1. --config PATH, else $MPILOT_CONFIG, else ~/.config/mpilot/mpilot.toml
+#      (There is no lookup in the current directory: mpilot is often run next to an
+#      untrusted repository, whose files must never configure it.)
+#   2. environment variables MPILOT_<SECTION>__<FIELD>, e.g. MPILOT_BUDGET__MAX_TURNS=100
+#   3. CLI flags, e.g. --max-turns 100
+#
+# Set up:  mkdir -p ~/.config/mpilot && cp mpilot.toml.example ~/.config/mpilot/mpilot.toml
+# This file holds no secrets. The GitHub token comes from MPILOT_GITHUB_TOKEN or a 0600 file.
+# No API key exists in v1: the agent runs on your Claude subscription (NFR-11).
+
+[budget]                    # NFR-1, NFR-2, NFR-3
+max_turns = 300
+max_tokens = 8000000
+max_minutes = 120           # wall clock per run, excluding time paused on a usage limit
+suite_timeout_minutes = 20  # per full-suite execution
+max_attempts_step = 6
+max_attempts_run = 40
+
+[diff]                      # NFR-8: over either limit -> escalation, no PR (lockfiles excluded)
+max_files = 60
+max_lines = 1500
+
+[bench]                     # NFR-9, `mpilot bench run`
+parallel = 1
+seeds = 1
+batch_size = 3
+
+[sandbox]                   # §9.3
+cpus = 4
+memory_gb = 8               # lower it (e.g. 5) if WSL sees less than 8 GB (decisions D7)
+disk_gb = 20
+pids = 1024
+max_command_timeout_s = 900
+
+[intake]                    # FR-2
+clone_depth = 50
+max_repo_mb = 500
+
+[baseline]                  # FR-4
+runs = 3
+max_flaky_pct = 5.0
+
+[integrity]                 # §11.2 (f)
+coverage_gate_pp = 2.0
+coverage_report_pp = 5.0
+
+[repair]                    # §7.4
+no_progress_attempts = 3
+regression_pct = 20.0
+
+[context]                   # token limits, estimated as ceil(chars / 3) (B3)
+repo_map_tokens_planner = 4000   # also the Analyzer
+repo_map_tokens_editor = 1500
+notes_tokens = 2000
+diagnoser_input_tokens = 8000
+explorer_answer_tokens = 1500
+log_max_lines = 60
+
+[tools]                     # §8.3, §8.5, §9.1
+editor_max_tool_calls = 15
+explorer_max_tool_calls = 20
+changelog_top_k_max = 8
+
+[supply_chain]              # §11.4
+min_release_age_days = 7
+
+[models]                    # tier -> model ID (B7). Opus 5.5 and Sonnet 5.5 only (NFR-12).
+opus = "claude-opus-5-5"
+sonnet = "claude-sonnet-5-5"
+
+[routing]                   # §8.4 Policies
+policy = "routed"           # routed | all_opus | all_sonnet (ablation only)
+effort_policy = "routed"    # routed | all_high
+
+[runtime]
+kind = "agent_sdk"          # the only runtime in v1
+
+[github]                    # §11.3 control 1
+repos = []                  # "owner/name" repositories the credential provider may touch
+# token_file = "/home/you/.config/mpilot/github-token"   # 0600, outside any git work tree
+
+[paths]
+runs_dir = "runs"
+db_path = "runs/mpilot.db"
+
+# Prices stay empty until copied from the official pricing page, with a date (B7); the USD
+# column then shows "n/a". Never guess a price.
+#
+# [prices."claude-opus-5-5"]
+# input_per_mtok = 0.0
+# output_per_mtok = 0.0
+# cache_read_per_mtok = 0.0
+# cache_write_per_mtok = 0.0
+# source_url = "https://..."
+# as_of = 2026-11-20

@@ -60,7 +60,7 @@ def test_cli_rejects_a_bad_token_file_with_exit_2(
     path = tmp_path / "token"
     path.write_text(TOKEN)
     path.chmod(0o644)
-    monkeypatch.setenv("MPILOT_GITHUB_TOKEN_FILE", str(path))
+    monkeypatch.setenv("MPILOT_GITHUB__TOKEN_FILE", str(path))
     result = CliRunner().invoke(app, ["selftest"])
     assert result.exit_code == 2
     assert TOKEN not in result.output
