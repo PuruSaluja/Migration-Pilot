@@ -18,6 +18,8 @@ from mpilot.models.domain import (
     TestResult,
     TestStage,
     VerifyResult,
+    VerifyStage,
+    VerifyStageResult,
 )
 from mpilot.sandbox.base import CacheMode
 from mpilot.testing.doubles import DictTree
@@ -57,6 +59,7 @@ def _verifier() -> StaticVerifier:
     return StaticVerifier(
         baseline_result=Baseline(
             run_id=RUN,
+            stages=[VerifyStageResult(stage=VerifyStage.INSTALL, passed=True)],
             runs=[_tests(TestStage.BASELINE)],
             passing_ids=frozenset(),
             flaky_ids=frozenset(),
@@ -66,8 +69,13 @@ def _verifier() -> StaticVerifier:
         verify_result=VerifyResult(),
         final=FinalVerification(
             mirror_commit="a" * 40,
-            verify=VerifyResult(),
-            tests=_tests(TestStage.FINAL),
+            verify=VerifyResult(
+                stages=[
+                    VerifyStageResult(stage=VerifyStage.INSTALL, passed=True),
+                    VerifyStageResult(stage=VerifyStage.TESTS, passed=True),
+                ],
+                tests=_tests(TestStage.FINAL),
+            ),
             runner_exit_code=0,
             runner_summary=None,
             cache="fresh",

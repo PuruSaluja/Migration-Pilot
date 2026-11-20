@@ -3,6 +3,7 @@ is valid for Postgres as well as SQLite."""
 
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 
 import pytest
@@ -189,3 +190,18 @@ def test_postgres_sql_has_no_sqlite_isms() -> None:
     assert "AUTOINCREMENT" not in sql
     assert "PRAGMA" not in sql
     assert "SERIAL" in sql or "GENERATED" in sql  # the `seq` columns auto-number
+
+
+#: SHA-256 of `0001_initial_schema.py`, frozen at the Phase 1 gate (P1-12d). Editing a
+#: shipped revision would make existing databases disagree with new ones without any
+#: migration running; change the schema with a new revision instead.
+FROZEN_0001_SHA256 = "7e8c71926731af72dc8e51677154b18d82d13f98ad26aa3a31440c69b77b32b8"
+
+
+def test_the_initial_revision_is_frozen() -> None:
+    import mpilot.models.migrations.versions as versions
+
+    path = Path(versions.__file__).parent / "0001_initial_schema.py"
+    assert hashlib.sha256(path.read_bytes()).hexdigest() == FROZEN_0001_SHA256, (
+        "0001_initial_schema.py changed after the Phase 1 gate: add a new revision instead"
+    )

@@ -117,16 +117,21 @@ def checkpoint(seq: int, **update: Any) -> Checkpoint:
 def final_verification(commit: str = "b" * 40, **update: Any) -> art.FinalVerification:
     base: dict[str, Any] = {
         "mirror_commit": commit,
-        "verify": d.VerifyResult(),
-        "tests": d.TestResult(
-            run_id=RUN,
-            stage=d.TestStage.FINAL,
-            passed=3,
-            failed=0,
-            skipped=1,
-            errors=0,
-            duration_s=1.0,
-            passed_ids=frozenset({"t::a", "t::b", "t::c"}),
+        "verify": d.VerifyResult(
+            stages=[
+                d.VerifyStageResult(stage=stage, passed=True)
+                for stage in (d.VerifyStage.INSTALL, d.VerifyStage.TESTS)
+            ],
+            tests=d.TestResult(
+                run_id=RUN,
+                stage=d.TestStage.FINAL,
+                passed=3,
+                failed=0,
+                skipped=1,
+                errors=0,
+                duration_s=1.0,
+                passed_ids=frozenset({"t::a", "t::b", "t::c"}),
+            ),
         ),
         "runner_exit_code": 0,
         "runner_summary": art.TestCounts(passed=3, failed=0, skipped=1, errors=0),
@@ -253,8 +258,10 @@ def test_single_records_are_replaced_not_duplicated(store: RunStore) -> None:
     for record in first:
         store.put(record, lease=lease_for(store))
         assert store.rows(RUN, type(record)) == [record]
+    with pytest.raises(StoreError, match="already has its baseline"):  # P0 is fixed for the run
+        store.put(sample(d.Baseline, test_count=99), lease=lease_for(store))
+    assert store.rows(RUN, d.Baseline) == [first[0]]
     second: list[Any] = [
-        sample(d.Baseline, test_count=99),
         sample(d.Plan, approved=None, risks=["peer deps"]),  # approved needs CP-1 (P1-12c)
         sample(d.PullRequest, number=2, url="https://github.com/o/r/pull/2"),
         escalation(category=FailureCategory.BUDGET_EXHAUSTED, report_md="# again"),

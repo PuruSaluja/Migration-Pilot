@@ -24,6 +24,7 @@ After the last turn, `raises` (a usage limit, say) fires as the "next request" t
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -77,11 +78,17 @@ class ScriptedToolCall(_Frozen):
 
 
 class ScriptedTurn(_Frozen):
-    """One model response: it asks for tools, or gives the final answer."""
+    """One model response: it asks for tools, or gives the final answer.
+
+    `final` is the answer as the model gave it: a JSON object, or raw text (a str) for an
+    answer that is not one, which ends the call SCHEMA_INVALID unless the text parses to an
+    object that fits the schema. `usage=None` is a runtime that cannot report per-turn
+    usage: the guard is charged `after_turn(None)` (its pessimistic estimate), and only
+    `ScriptedCall.total_usage` says what the call used."""
 
     tool_calls: tuple[ScriptedToolCall, ...] = ()
-    final: dict[str, Any] | None = None
-    usage: Usage = Field(default_factory=lambda: Usage(input_tokens=1, output_tokens=1))
+    final: dict[str, Any] | str | None = None
+    usage: Usage | None = Field(default_factory=lambda: Usage(input_tokens=1, output_tokens=1))
 
     @model_validator(mode="after")
     def _check(self) -> Self:
@@ -106,9 +113,14 @@ class ScriptedCall(_Frozen):
     thinking_enabled: bool = True
     effort_applied: Effort | None = None
     latency_ms: NonNegInt = 0
+    #: The call's usage as the runtime reports it at the end. None = the sum of the turns'
+    #: usage. Set it to record what the SDK really reports (P4-22), or for turns without one.
+    total_usage: Usage | None = None
 
     @model_validator(mode="after")
     def _check(self) -> Self:
+        if self.total_usage is None and any(t.usage is None for t in self.turns):
+            raise ValueError("a turn without usage needs total_usage, or tokens would vanish")
         for turn in self.turns[:-1]:
             if turn.final is not None:
                 raise ValueError("only the last turn can give the final answer")
@@ -117,12 +129,12 @@ class ScriptedCall(_Frozen):
         return self
 
     @classmethod
-    def answer(cls, output: dict[str, Any], **kw: Any) -> Self:
+    def answer(cls, output: dict[str, Any] | str, **kw: Any) -> Self:
         """One turn, no tools, this final answer."""
         return cls(turns=(ScriptedTurn(final=output),), **kw)
 
     @classmethod
-    def using(cls, *tool_calls: ScriptedToolCall, then: dict[str, Any], **kw: Any) -> Self:
+    def using(cls, *tool_calls: ScriptedToolCall, then: dict[str, Any] | str, **kw: Any) -> Self:
         """One turn asking for these tools, then a turn with the final answer."""
         return cls(turns=(ScriptedTurn(tool_calls=tool_calls), ScriptedTurn(final=then)), **kw)
 
@@ -166,6 +178,17 @@ def _check_expectations(
         )
 
 
+def _as_object(final: dict[str, Any] | str) -> dict[str, Any] | None:
+    """The final answer as a JSON object, or None if it is not one (raw text, a list, ...)."""
+    if isinstance(final, dict):
+        return dict(final)
+    try:
+        parsed = json.loads(final)
+    except json.JSONDecodeError:
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
 async def play(
     script: ScriptedCall,
     req: RoleCallRequest,
@@ -193,7 +216,8 @@ async def play(
             stop = StopReason.MAX_TURNS
             break
         turns += 1
-        usage += turn.usage
+        if turn.usage is not None:
+            usage += turn.usage
         try:
             guard.after_turn(turn.usage)
         except BudgetExceededError:
@@ -215,10 +239,11 @@ async def play(
         if stop is not None:
             break
         if turn.final is not None:
-            if schema_errors(req.output_schema, turn.final):
+            answer = _as_object(turn.final)
+            if answer is None or schema_errors(req.output_schema, answer):
                 stop = StopReason.SCHEMA_INVALID
             else:
-                stop, output = StopReason.COMPLETED, dict(turn.final)
+                stop, output = StopReason.COMPLETED, answer
             break
 
     if stop is None:
@@ -243,7 +268,7 @@ async def play(
         effort_applied=script.effort_applied or req.choice.effort,
         models_seen=frozenset({model_id, *script.models_seen_extra}),
         thinking_enabled=script.thinking_enabled,
-        usage=usage,
+        usage=script.total_usage if script.total_usage is not None else usage,
         turns=turns,
         latency_ms=script.latency_ms,
         tool_call_ids=tuple(i.tool_call_id for i in invocations),

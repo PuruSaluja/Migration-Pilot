@@ -30,6 +30,7 @@ from mpilot.core.errors import (
     CancelRequestedError,
     CredentialRefusedError,
     IllegalTransition,
+    LeaseLostError,
     PathEscapeError,
     PushRefusedError,
     RunEndedError,
@@ -96,6 +97,7 @@ from mpilot.models.domain import (
 from mpilot.models.state import BudgetState, Checkpoint
 from mpilot.orchestrator.base import (
     AppendRow,
+    AttemptNumbers,
     CallEstimate,
     EventKind,
     RowT,
@@ -473,6 +475,8 @@ class RecordingVcs:
             )
         if not report.passed:
             raise PushRefusedError("the integrity gate did not pass")
+        if verified.tests is None or verified.verify.red_before_tests is not None:
+            raise PushRefusedError("the final verification is red before the tests")
         if len({verified.tests.run_id, report.run_id, verdict.run_id}) != 1:
             raise PushRefusedError("verification, report and verdict are from different runs")
         if verdict.decision is not CriticDecision.APPROVE:
@@ -659,7 +663,7 @@ class SimpleBudget:
         self.turns_in_flight = 0
         self.state_ = self.state_.model_copy(update={"spent": spent})
 
-    def start_attempt(self, step_id: StepId) -> int:
+    def start_attempt(self, step_id: StepId) -> AttemptNumbers:
         st = self.state_
         on_step = st.attempts_by_step.get(step_id, 0)
         if on_step >= self.budgets.max_attempts_step:
@@ -672,7 +676,7 @@ class SimpleBudget:
                 "attempts_total": st.attempts_total + 1,
             }
         )
-        return self.state_.attempts_total
+        return AttemptNumbers(n=self.state_.attempts_total, n_in_step=on_step + 1)
 
     def record_sandbox_seconds(self, seconds: float) -> None:
         s = self.state_.spent
@@ -809,6 +813,8 @@ class MemoryStore:
 
     def put(self, row: SingleRow, *, lease: Lease) -> None:
         self._fence(lease, row.run_id)
+        if isinstance(row, Baseline) and (row.run_id, Baseline) in self.singles:
+            raise StoreError(f"run {row.run_id} already has its baseline")
         if isinstance(row, Plan):
             problem = plan_problem(row.approved, self.control(row.run_id))
             if problem:
@@ -882,7 +888,11 @@ class MemoryBus:
             self._signal = asyncio.Event()
         return self._signal
 
-    def publish(self, run_id: RunId, kind: EventKind, data: dict[str, Any]) -> RunEventRecord:
+    def publish(
+        self, run_id: RunId, kind: EventKind, data: dict[str, Any], *, lease: Lease
+    ) -> RunEventRecord:
+        if lease.run_id != run_id:
+            raise LeaseLostError(f"a lease for {lease.run_id} cannot publish for {run_id}")
         if run_id in self.closed:
             raise ValueError(f"run {run_id} is closed")
         seq = len(self.events[run_id]) + 1

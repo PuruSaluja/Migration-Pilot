@@ -128,7 +128,8 @@ class ToolContext(BaseModel):
     #: Files the current plan step names. For a `test_touch` step these are the only test
     #: files that may be written (H3, P4-12).
     step_target_files: frozenset[str] = frozenset()
-    #: H8 (A11): flag -> plan-level justification, e.g. {"--legacy-peer-deps": "..."}.
+    #: H8 (A11): the running step's `Step.flag_justifications`, e.g.
+    #: {"--legacy-peer-deps": "..."}; empty outside a step.
     flag_justifications: Mapping[str, str] = Field(default_factory=dict)
     #: §8.3 Editor <= 15 per attempt, §8.5 Explorer <= 20. The host counts per
     #: `role_call_id`, so the orchestrator passes the *remaining* per-attempt allowance: a

@@ -530,6 +530,8 @@ class SqliteRunStore:
     def put(self, row: SingleRow, *, lease: Lease) -> None:
         with self._write() as session:
             self._fence(session, lease, row.run_id)
+            if isinstance(row, Baseline) and session.get(DbBaseline, row.run_id) is not None:
+                raise StoreError(f"run {row.run_id} already has its baseline")
             if isinstance(row, Plan):
                 problem = plan_problem(row.approved, self._control_of(session, row.run_id))
                 if problem:

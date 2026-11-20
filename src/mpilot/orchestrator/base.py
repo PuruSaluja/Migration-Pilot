@@ -244,6 +244,19 @@ class CallEstimate(_Frozen):
         return n
 
 
+class AttemptNumbers(_Frozen):
+    """Both numbers of a new attempt, from one counter update (`Attempt.n`, `n_in_step`)."""
+
+    n: PositiveInt  # run-wide; the n of `refs/mpilot/attempt/<n>`
+    n_in_step: PositiveInt
+
+    @model_validator(mode="after")
+    def _check(self) -> Self:
+        if self.n_in_step > self.n:
+            raise ValueError("an attempt's number in its step cannot exceed its run-wide number")
+        return self
+
+
 @runtime_checkable
 class BudgetManager(Protocol):
     """NFR-1..3, H7, B2. The only place budget arithmetic happens. Never downgrades a model
@@ -271,13 +284,17 @@ class BudgetManager(Protocol):
     def record_call(
         self, call_id: LLMCallId, usage: Usage, turns: int, api_equiv_usd: float
     ) -> None:
-        """Reconcile the guard's in-call charges with the runtime's reported usage. Also for
-        an interrupted call: its tokens still count (B5)."""
+        """Reconcile the guard's in-call charges with the runtime's reported usage: `spent`
+        gains the reported usage, and the in-call charges (a bound used for stopping, not a
+        measure) are dropped. Never below what the runtime itself reported turn by turn: if
+        the final `usage` is lower than the per-turn reports it sums, the sum counts (H7).
+        Also for an interrupted call: its tokens still count (B5)."""
         ...
 
-    def start_attempt(self, step_id: StepId) -> int:
-        """Count one repair attempt and return its run-wide number (for `attempt_ref`).
-        Raises AttemptCapError at 6 per step or 40 per run (NFR-3) -> ESCALATED."""
+    def start_attempt(self, step_id: StepId) -> AttemptNumbers:
+        """Count one repair attempt and return its run-wide number (for `attempt_ref`) and its
+        number within the step, so callers never derive them separately. Raises
+        AttemptCapError at 6 per step or 40 per run (NFR-3) -> ESCALATED."""
         ...
 
     def record_sandbox_seconds(self, seconds: float) -> None: ...
@@ -385,7 +402,9 @@ class RunStore(Protocol):
 
     def put(self, row: SingleRow, *, lease: Lease) -> None:
         """Insert or replace the run's single record of this type (plan approval, PR). A
-        `Plan` whose `approved` disagrees with the recorded decision is a `StoreError`."""
+        `Plan` whose `approved` disagrees with the recorded decision is a `StoreError`. A
+        `Baseline` is written once per run and never replaced (P0 and the flaky set are
+        fixed for the run, §11.2): a second one is a `StoreError`."""
         ...
 
     def rows(self, run_id: RunId, kind: type[RowT]) -> Sequence[RowT]:
@@ -425,7 +444,10 @@ class RunStore(Protocol):
     def latest_checkpoint(self, run_id: RunId) -> Checkpoint | None: ...
 
     def add_eval(self, result: EvalResult) -> None:
-        """Benchmark result rows (FR-20)."""
+        """Benchmark result rows (FR-20). DRAFT until P9-01: `EvalResult` has no `run_id` or
+        `bench_id` yet, so a row can't be traced to its run or batch, and how a resumed
+        batch replaces a row is open. P9-01 adds both (a new migration) and may change this
+        method and `evals`."""
         ...
 
     def evals(self, suite: str) -> Sequence[EvalResult]: ...
@@ -454,8 +476,20 @@ class RunEventRecord(_Frozen):
 
 @runtime_checkable
 class EventBus(Protocol):
-    def publish(self, run_id: RunId, kind: EventKind, data: dict[str, Any]) -> RunEventRecord:
-        """Record and fan out one event; the bus assigns `seq` and `at`."""
+    """Run events for `mpilot logs --follow`, SSE and the UI (P3-05, P8-02).
+
+    Durable first: `publish` writes the record to its own table (`run_events`, added with the
+    bus in P3-05 as a new migration) and only then hands it to subscribers, so a replay with
+    `after_seq` never misses an event a live subscriber saw, across processes and restarts.
+    Events are a view: run state is the checkpoint, never the event stream."""
+
+    def publish(
+        self, run_id: RunId, kind: EventKind, data: dict[str, Any], *, lease: Lease
+    ) -> RunEventRecord:
+        """Persist, then fan out one event; the bus assigns `seq` and `at`. Fenced like every
+        write of run state: only the process driving the run publishes, so a stalled driver
+        that was taken over cannot add events (`LeaseLostError`; the store-backed bus checks
+        the lease in the insert's transaction, P3-05)."""
         ...
 
     def subscribe(self, run_id: RunId, *, after_seq: int = 0) -> AsyncIterator[RunEventRecord]:

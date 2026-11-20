@@ -23,6 +23,7 @@ from mpilot.models.domain import (
     IntegrityReport,
     MigrationSpec,
     Plan,
+    VerifyStage,
     Violation,
 )
 from mpilot.policy.test_files import TestFileClassifier
@@ -67,22 +68,36 @@ class GateInput:
     - `mirror_commit` is the commit to push. `final.mirror_commit`, `commit_tree.commit`
       and `diff.target` must equal it, and `diff.target_digest` must be its tree's digest.
     - `base_sha` is the run's base. `diff.base` and `base_tree.commit` must equal it.
-    - `step_diffs`, in plan order, must chain: the first starts at `base_sha`, each starts
-      where the previous ended, and the last ends at the pushed tree.
+    - `step_diffs` are the run's work as consecutive segments, each attributed (by the
+      orchestrator, never the model) to the plan step it was made under. They must chain:
+      the first starts at `base_sha`, each starts where the previous ended, and the last
+      ends at the pushed tree. A step may have several segments, and a later segment may
+      return to an earlier step (a repair after a failed INTEGRITY_CHECK, a Critic revise),
+      but steps begin in plan order: a step's first segment never precedes an earlier
+      step's first one.
 
     Fields:
     - `final`: the only test results, resolved versions and coverage a check may use.
     - `walked_tree`: the host walk of the workspace; (i) compares it with
       `commit_tree.snapshot()`.
     - `diff`: `base_sha` -> `mirror_commit`, host-computed.
-    - `step_diffs`: the diff each plan step produced, between consecutive host snapshots,
-      used to map hunks to `test_touch` steps (d) (P6-01).
+    - `step_diffs`: the segments above, each the diff between consecutive host snapshots,
+      used to map hunks to `test_touch` steps (d) (P6-01). Check (d) judges every segment as
+      well as the net diff, so a test-file change in a segment of a non-`test_touch` step
+      fails even if a later segment undoes it; in a `test_touch` segment, test-file hunks
+      may touch only that step's `target_files` (the plan's, never the Critic's
+      `hunk_mapping`).
+    - A missing final test run (a stage before the tests failed) is a `final_red` violation
+      and `test_count_after` is 0; checks that need test results treat it as failing. A
+      final run that skipped install, or the build or typecheck stage of a repo whose
+      `env` has that command, is `final_incomplete` (L0 judges build and typecheck here).
     - `base_tree` and `commit_tree`: file contents at `base_sha` and at `mirror_commit`.
     - `classifier`: built from host-owned data at baseline (D2).
     - `allowed_files`: usage sites, implicated diagnosis files, manifests and lockfiles, and
       plan-named configs (§11.3 control 5), computed by the orchestrator.
     - `diff_limits`: NFR-8 caps; over either one escalates and no PR is opened.
-    - `flag_justifications`: H8 (A11), flag -> plan-level justification.
+    - `flag_justifications`: H8 (A11), flag -> justification: `Plan.flag_justifications`,
+      the union over the plan's steps (`Step.flag_justifications`).
     - `removed_api_patterns`: the curated registry list only (D3). Model-extracted APIs never
       appear here.
     """
@@ -143,19 +158,36 @@ def binding_violations(inp: GateInput) -> list[Violation]:
 
     if inp.plan.run_id != inp.baseline.run_id:
         out.append(_gate("run_mismatch", "plan and baseline belong to different runs"))
+    final_tests, verify = inp.final.tests, inp.final.verify
+    ran = {s.stage for s in verify.stages}
+    expected = [VerifyStage.INSTALL]
+    expected += [VerifyStage.BUILD] if inp.env.build_cmd else []
+    expected += [VerifyStage.TYPECHECK] if inp.env.typecheck_cmd else []
+    red = verify.red_before_tests
+    if red is not None:
+        out.append(_gate("final_red", f"final verification failed at {red}: no test run to judge"))
+    else:
+        missing = [s for s in expected if s not in ran]
+        if missing:
+            names = ", ".join(str(s) for s in missing)
+            out.append(_gate("final_incomplete", f"final verification skipped {names}"))
+        if final_tests is None:
+            out.append(_gate("final_red", "final verification never reached the tests"))
+    if final_tests is not None and final_tests.run_id != inp.baseline.run_id:
+        out.append(_gate("run_mismatch", "final test run and baseline belong to different runs"))
 
     order = {s.id: s.order for s in inp.plan.steps}
-    seen: set[str] = set()
-    last_order = -1
+    started: set[str] = set()
+    last_started = -1
     expected_base = base
     for step_id, d in inp.step_diffs:
-        if step_id not in order or step_id in seen:
-            out.append(_gate("step_chain", f"step diff for {step_id} is not one plan step"))
-        elif order[step_id] <= last_order:
-            out.append(_gate("step_chain", f"step diff for {step_id} is out of plan order"))
-        else:
-            last_order = order[step_id]
-        seen.add(step_id)
+        if step_id not in order:
+            out.append(_gate("step_chain", f"step diff for {step_id} is not a plan step"))
+        elif step_id not in started:
+            if order[step_id] <= last_started:
+                out.append(_gate("step_chain", f"step {step_id} begins out of plan order"))
+            last_started = max(last_started, order[step_id])
+            started.add(step_id)
         if d.base != expected_base:
             out.append(
                 _gate("step_chain", f"step {step_id} starts at {d.base}, not {expected_base}")
@@ -210,7 +242,7 @@ def evaluate_gate(
         violations=violations,
         coverage_delta_pp=None if base_cov is None or final_cov is None else final_cov - base_cov,
         test_count_before=inp.baseline.test_count,
-        test_count_after=inp.final.tests.executed_count,
+        test_count_after=0 if inp.final.tests is None else inp.final.tests.executed_count,
         resolved_versions=dict(inp.final.resolved_versions),
         removed_api_usages_remaining=[
             v.message for v in violations if v.check_id == REMOVED_API_CHECK_ID

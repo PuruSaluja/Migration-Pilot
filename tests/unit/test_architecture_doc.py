@@ -107,6 +107,7 @@ VALUE_TYPES: list[type] = [
     ob.RunRequest,
     ob.RunEvent,
     ob.CallEstimate,
+    ob.AttemptNumbers,  # P1-12d
     ob.EventKind,
     ob.RunEventRecord,
     state.FailureHistoryEntry,

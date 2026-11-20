@@ -19,6 +19,8 @@ from mpilot.models.domain import (
     TestResult,
     TestStage,
     VerifyResult,
+    VerifyStage,
+    VerifyStageResult,
     Violation,
 )
 from mpilot.testing.infra_doubles import (
@@ -128,20 +130,25 @@ def test_credentials_refuse_repos_off_the_list() -> None:
     assert "test-token" not in repr(asyncio.run(creds.token_for(REPO)))  # SecretStr hides it
 
 
-def _verified(commit: str) -> FinalVerification:
+def _verified(commit: str, *, tests_passed: bool = True) -> FinalVerification:
     tests = TestResult(
         run_id=RunId("r"),
         stage=TestStage.FINAL,
         passed=1,
-        failed=0,
+        failed=0 if tests_passed else 1,
         skipped=0,
         errors=0,
         duration_s=1,
     )
     return FinalVerification(
         mirror_commit=commit,
-        verify=VerifyResult(),
-        tests=tests,
+        verify=VerifyResult(
+            stages=[
+                VerifyStageResult(stage=VerifyStage.INSTALL, passed=True),
+                VerifyStageResult(stage=VerifyStage.TESTS, passed=tests_passed),
+            ],
+            tests=tests,
+        ),
         runner_exit_code=0,
         runner_summary=None,
         cache="fresh",
@@ -215,6 +222,33 @@ def test_push_of_the_verified_commit_and_idempotent_pr() -> None:
     again = asyncio.run(vcs.upsert_draft_pr(REPO, **kw))
     assert first == again
     assert first.draft
+
+
+def test_a_baseline_flaky_failure_in_the_final_run_does_not_block_the_push() -> None:
+    """Re-review N1 (P1-12d): the TESTS stage's `passed` is the runner's verdict; tests are
+    judged against P0 minus flaky by the gate, which `report.passed` already covers."""
+    vcs = RecordingVcs()
+    _push(vcs, "mpilot/ok", verified=_verified("a" * 40, tests_passed=False))
+    assert vcs.pushes == [("mpilot/ok", "a" * 40)]
+
+
+def test_a_final_run_red_before_the_tests_never_pushes() -> None:
+    red = FinalVerification(
+        mirror_commit="a" * 40,
+        verify=VerifyResult(
+            stages=[
+                VerifyStageResult(stage=VerifyStage.INSTALL, passed=True),
+                VerifyStageResult(stage=VerifyStage.BUILD, passed=False),
+            ]
+        ),
+        runner_exit_code=None,
+        runner_summary=None,
+        cache="fresh",
+    )
+    vcs = RecordingVcs()
+    with pytest.raises(PushRefusedError, match="red before the tests"):
+        _push(vcs, "mpilot/ok", verified=red)
+    assert vcs.pushes == []
 
 
 def test_wip_push_for_escalations() -> None:

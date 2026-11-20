@@ -23,6 +23,8 @@ from mpilot.models.domain import (
     TestResult,
     TestStage,
     VerifyResult,
+    VerifyStage,
+    VerifyStageResult,
 )
 from mpilot.policy import gate
 from mpilot.policy import test_files as tf
@@ -55,11 +57,16 @@ def _tests(stage: TestStage, **kw: Any) -> TestResult:
     return TestResult(**base)
 
 
+GREEN_STAGES = [
+    VerifyStageResult(stage=stage, passed=True)
+    for stage in (VerifyStage.INSTALL, VerifyStage.BUILD, VerifyStage.TYPECHECK, VerifyStage.TESTS)
+]
+
+
 def _final(**kw: Any) -> art.FinalVerification:
     base: dict[str, Any] = {
         "mirror_commit": SHA_B,
-        "verify": VerifyResult(),
-        "tests": _tests(TestStage.FINAL),
+        "verify": VerifyResult(stages=GREEN_STAGES, tests=_tests(TestStage.FINAL)),
         "runner_exit_code": 0,
         "runner_summary": art.TestCounts(passed=3, failed=0, skipped=1, errors=0),
         "resolved_versions": {"react": "18.3.1"},
@@ -89,6 +96,7 @@ def _input(**kw: Any) -> gate.GateInput:
         ),
         "baseline": Baseline(
             run_id=RUN,
+            stages=[VerifyStageResult(stage=VerifyStage.INSTALL, passed=True)],
             runs=[_tests(TestStage.BASELINE)],
             passing_ids=frozenset({"t1"}),
             flaky_ids=frozenset(),
@@ -229,7 +237,13 @@ def test_workspace_diff_is_sorted_and_unique() -> None:
 
 def test_final_verification_judges_only_a_final_run() -> None:
     with pytest.raises(ValidationError, match="stage == final"):
-        _final(tests=_tests(TestStage.FULL))
+        _final(verify=VerifyResult(stages=GREEN_STAGES, tests=_tests(TestStage.FULL)))
+    with pytest.raises(ValidationError, match="from install"):
+        _final(verify=VerifyResult(stages=GREEN_STAGES[1:], tests=_tests(TestStage.FINAL)))
+    with pytest.raises(ValidationError, match="from install"):
+        _final(verify=VerifyResult())
+    with pytest.raises(ValidationError):
+        _final(tests=_tests(TestStage.FINAL))  # one copy only: the run lives in verify.tests
     with pytest.raises(ValidationError):
         _final(cache="reused")
     with pytest.raises(ValidationError, match="git object id"):
@@ -321,14 +335,34 @@ def test_step_diffs_must_chain_from_base_to_the_pushed_tree() -> None:
     wrong_start = ((STEP_1.id, art.WorkspaceDiff(base=SHA_C, target=SHA_B, target_digest=head)),)
     wrong_end = (good[0], (STEP_2.id, art.WorkspaceDiff(base=SHA_C, target=d, target_digest=H2)))
     unknown = (good[0], (StepId("nope"), good[1][1]))
-    repeated = (good[0], (STEP_1.id, good[1][1]))
     out_of_order = (
         (STEP_2.id, art.WorkspaceDiff(base=SHA_A, target=SHA_C, target_digest=H1)),
         (STEP_1.id, art.WorkspaceDiff(base=SHA_C, target=d, target_digest=head)),
     )
-    for bad in (gap, wrong_start, wrong_end, unknown, repeated, out_of_order):
+    for bad in (gap, wrong_start, wrong_end, unknown, out_of_order):
         report = gate.evaluate_gate(ANY, _input(step_diffs=bad), required=REQ)
         assert [v.code for v in report.violations] == ["step_chain"], bad
+
+
+def test_a_later_segment_may_return_to_an_earlier_step() -> None:
+    """S4 (P1-12d): a repair after a failed INTEGRITY_CHECK, or a Critic revise, attributed
+    to an earlier step (a `test_touch` one included) is a new segment, not a broken chain."""
+    head = COMMIT_TREE.snapshot().digest()
+    d, e = "d" * 40, "e" * 40
+    segments = (
+        (STEP_1.id, art.WorkspaceDiff(base=SHA_A, target=SHA_C, target_digest=H1)),
+        (STEP_2.id, art.WorkspaceDiff(base=SHA_C, target=d, target_digest=H2)),
+        (STEP_1.id, art.WorkspaceDiff(base=d, target=e, target_digest=head)),  # the repair
+    )
+    assert gate.evaluate_gate(ANY, _input(step_diffs=segments), required=REQ).passed
+    twice = (segments[0], (STEP_1.id, art.WorkspaceDiff(base=SHA_C, target=d, target_digest=head)))
+    assert gate.evaluate_gate(ANY, _input(step_diffs=twice), required=REQ).passed
+    broken = (
+        *segments[:2],
+        (STEP_1.id, art.WorkspaceDiff(base=SHA_C, target=e, target_digest=head)),
+    )
+    report = gate.evaluate_gate(ANY, _input(step_diffs=broken), required=REQ)
+    assert [v.code for v in report.violations] == ["step_chain"]  # still must chain
 
 
 def test_gate_check_id_is_reserved() -> None:
@@ -383,13 +417,68 @@ def test_plan_from_another_run_is_flagged() -> None:
     assert [v.code for v in report.violations] == ["run_mismatch"]
 
 
-def test_steps_sharing_an_order_value_cannot_be_chained_twice() -> None:
-    head = COMMIT_TREE.snapshot().digest()
+def test_steps_cannot_share_an_order_value_or_an_id() -> None:
+    """Steps begin in plan order (§9.5), so the plan itself refuses ambiguous orders."""
     twin = STEP_2.model_copy(update={"order": STEP_1.order})
-    plan = Plan(id=PlanId("plan-1"), run_id=RUN, steps=[STEP_1, twin])
-    chain = (
-        (STEP_1.id, art.WorkspaceDiff(base=SHA_A, target=SHA_C, target_digest=H1)),
-        (twin.id, art.WorkspaceDiff(base=SHA_C, target="d" * 40, target_digest=head)),
+    with pytest.raises(ValueError, match="orders are unique"):
+        Plan(id=PlanId("plan-1"), run_id=RUN, steps=[STEP_1, twin])
+    same_id = STEP_2.model_copy(update={"id": STEP_1.id})
+    with pytest.raises(ValueError, match="ids are unique"):
+        Plan(id=PlanId("plan-1"), run_id=RUN, steps=[STEP_1, same_id])
+
+
+def test_a_final_run_red_before_the_tests_fails_the_gate() -> None:
+    """Review B1 (P1-12d): no test run to judge is a gate failure, with no executed tests."""
+    red = _final(
+        verify=VerifyResult(
+            stages=[
+                VerifyStageResult(stage=VerifyStage.INSTALL, passed=True),
+                VerifyStageResult(stage=VerifyStage.BUILD, passed=False),
+            ]
+        )
     )
-    report = gate.evaluate_gate(ANY, _input(plan=plan, step_diffs=chain), required=REQ)
-    assert [v.code for v in report.violations] == ["step_chain"]
+    report = gate.evaluate_gate(ANY, _input(final=red), required=REQ)
+    assert [v.code for v in report.violations] == ["final_red"]
+    assert "build" in report.violations[0].message
+    assert report.test_count_after == 0
+
+
+@pytest.mark.parametrize(
+    ("env_update", "stages", "codes"),
+    [
+        (
+            {"build_cmd": "npm run build"},
+            [VerifyStage.INSTALL, VerifyStage.TESTS],
+            ["final_incomplete"],
+        ),
+        ({"typecheck_cmd": "tsc"}, [VerifyStage.INSTALL, VerifyStage.TESTS], ["final_incomplete"]),
+        ({}, [VerifyStage.INSTALL, VerifyStage.TESTS], []),  # the repo has no build/typecheck
+        ({}, [VerifyStage.INSTALL, VerifyStage.BUILD], ["final_red"]),  # never reached the tests
+    ],
+)
+def test_the_final_run_must_cover_the_repos_own_stages(
+    env_update: dict[str, str], stages: list[VerifyStage], codes: list[str]
+) -> None:
+    """Re-review (P1-12d): L0 judges build and typecheck on this record, so a final run that
+    skipped a stage the repo has is not evidence of success."""
+    inp = _input()
+    env = inp.env.model_copy(update=env_update)
+    reached = VerifyStage.TESTS in stages
+    final = _final(
+        verify=VerifyResult(
+            stages=[VerifyStageResult(stage=s, passed=True) for s in stages],
+            tests=_tests(TestStage.FINAL) if reached else None,
+        )
+    )
+    report = gate.evaluate_gate(ANY, _input(env=env, final=final), required=REQ)
+    assert [v.code for v in report.violations] == codes
+
+
+def test_a_final_test_run_of_another_run_is_flagged() -> None:
+    other = _final(
+        verify=VerifyResult(
+            stages=GREEN_STAGES, tests=_tests(TestStage.FINAL, run_id=RunId("run-other"))
+        )
+    )
+    report = gate.evaluate_gate(ANY, _input(final=other), required=REQ)
+    assert [v.code for v in report.violations] == ["run_mismatch"]

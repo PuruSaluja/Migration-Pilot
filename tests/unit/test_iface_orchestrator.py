@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
@@ -16,6 +16,7 @@ from mpilot.agents.router import ExplorerFlag, RoutingCounters, StickyState
 from mpilot.agents.runtime import BudgetGuard
 from mpilot.core.errors import AttemptCapError, BudgetExceededError, IllegalTransition
 from mpilot.core.types import AttemptId, LLMCallId, RunId, RunStatus, StepId, ToolCallId, Usage
+from mpilot.models.coordination import Lease
 from mpilot.models.domain import (
     Budgets,
     Ecosystem,
@@ -163,12 +164,14 @@ def test_refused_only_if_one_turn_does_not_fit() -> None:
 
 def test_attempt_caps_end_as_escalation_not_budget() -> None:
     b = SimpleBudget(BUDGETS)
-    for _ in range(6):
-        b.start_attempt(StepId("s1"))
+    first = [b.start_attempt(StepId("s1")) for _ in range(6)]
+    assert [(a.n, a.n_in_step) for a in first[:2]] == [(1, 1), (2, 2)]
     with pytest.raises(AttemptCapError):
         b.start_attempt(StepId("s1"))
     numbers = [b.start_attempt(StepId(f"s{i}")) for i in range(2, 36)]
-    assert numbers[-1] == 40
+    assert (numbers[-1].n, numbers[-1].n_in_step) == (40, 1)
+    with pytest.raises(ValueError, match="cannot exceed"):
+        ob.AttemptNumbers(n=1, n_in_step=2)
     with pytest.raises(AttemptCapError, match="in the run"):
         b.start_attempt(StepId("s99"))
 
@@ -493,12 +496,17 @@ def test_store_rows_round_trip() -> None:
 # ---------------------------------------------------------------- events
 
 
+LEASE = Lease(
+    run_id=RUN, holder="t", token=1, acquired_at=NOW, expires_at=NOW + timedelta(seconds=60)
+)
+
+
 def test_bus_replays_after_seq_then_streams_live() -> None:
     bus = MemoryBus()
 
     async def run() -> list[int]:
-        bus.publish(RUN, ob.EventKind.STATE_CHANGED, {"to": "CLONED"})
-        bus.publish(RUN, ob.EventKind.LOG, {"msg": "a"})
+        bus.publish(RUN, ob.EventKind.STATE_CHANGED, {"to": "CLONED"}, lease=LEASE)
+        bus.publish(RUN, ob.EventKind.LOG, {"msg": "a"}, lease=LEASE)
         got: list[int] = []
 
         async def consume() -> None:
@@ -507,7 +515,7 @@ def test_bus_replays_after_seq_then_streams_live() -> None:
 
         task = asyncio.create_task(consume())
         await asyncio.sleep(0)
-        bus.publish(RUN, ob.EventKind.LOG, {"msg": "b"})
+        bus.publish(RUN, ob.EventKind.LOG, {"msg": "b"}, lease=LEASE)
         await asyncio.sleep(0)
         bus.close(RUN)
         await asyncio.wait_for(task, 1)
@@ -515,7 +523,7 @@ def test_bus_replays_after_seq_then_streams_live() -> None:
 
     assert asyncio.run(run()) == [2, 3]
     with pytest.raises(ValueError, match="closed"):
-        bus.publish(RUN, ob.EventKind.LOG, {})
+        bus.publish(RUN, ob.EventKind.LOG, {}, lease=LEASE)
 
 
 def test_event_seq_must_be_positive() -> None:

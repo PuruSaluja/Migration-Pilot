@@ -98,6 +98,7 @@ class TestStage(StrEnum):
     TARGETED = "targeted"
     FULL = "full"
     FINAL = "final"
+    RERUN = "rerun"  # FR-11/C2 rerun of failures: informs the Diagnoser, never judged
 
 
 class VerifyStage(StrEnum):
@@ -243,6 +244,10 @@ class TestResult(DomainModel):
 
 
 class VerifyStageResult(DomainModel):
+    """One pipeline stage. For TESTS, `passed` is the test runner's own verdict and is only
+    informational: whether the tests are green (§7.4 loop exit, push) is decided against
+    `P0 \\ flaky` by the orchestrator and gate checks (a)/(b), never by this flag."""
+
     stage: VerifyStage
     passed: bool
     exit_code: int | None = None
@@ -252,27 +257,91 @@ class VerifyStageResult(DomainModel):
 
 
 class VerifyResult(DomainModel):
+    """One pipeline run (FR-11): stages in order, stopping at the first failing one. `tests`
+    is the test run, present exactly when the pipeline reached the tests stage."""
+
     stages: list[VerifyStageResult] = Field(default_factory=list)  # in pipeline order
     tests: TestResult | None = None
 
+    @property
+    def red_stage(self) -> VerifyStage | None:
+        """The stage that failed (the last one run), if any; TESTS included, with the
+        runner's verdict (see `VerifyStageResult`)."""
+        failed = [s.stage for s in self.stages if not s.passed]
+        return failed[0] if failed else None
+
+    @property
+    def red_before_tests(self) -> VerifyStage | None:
+        """The install, build or typecheck stage that failed, if one did. This, not
+        `red_stage`, is what "the pipeline is red" means for success and the push: test
+        outcomes are judged only against the baseline (§11.2 a, b)."""
+        red = self.red_stage
+        return red if red is not None and red is not VerifyStage.TESTS else None
+
+    @model_validator(mode="after")
+    def _check(self) -> Self:
+        order = [list(VerifyStage).index(s.stage) for s in self.stages]
+        if order != sorted(set(order)):
+            raise ValueError("stages are in pipeline order, each at most once")
+        failed = [i for i, s in enumerate(self.stages) if not s.passed]
+        if failed and failed[0] != len(self.stages) - 1:
+            raise ValueError("the pipeline stops at the first failing stage")
+        reached_tests = any(s.stage is VerifyStage.TESTS for s in self.stages)
+        if reached_tests != (self.tests is not None):
+            raise ValueError("tests is set exactly when the pipeline reached the tests stage")
+        return self
+
 
 class Baseline(DomainModel):
+    """FR-4 on the unmodified repo. A baseline that went red before the tests (install,
+    build or typecheck failed) is still a `Baseline`: its `stages` end with the failing one
+    and it has no test runs, so BASELINE_RED always has a stored record behind it."""
+
     run_id: RunId
-    runs: list[TestResult] = Field(min_length=1)  # the baseline test runs (FR-4: 3)
+    #: install -> build -> typecheck results, in order. Install always runs; build and
+    #: typecheck are absent when the repo has none (EnvProfile).
+    stages: list[VerifyStageResult] = Field(min_length=1)
+    runs: list[TestResult] = Field(default_factory=list)  # the baseline test runs (FR-4: 3)
     passing_ids: IdSet  # P0: passing in every run, not flaky
     flaky_ids: IdSet
     test_file_hashes: dict[str, str]  # path -> sha256, from the host walk (§11.2)
     test_count: NonNegInt  # executed count, highest of the runs (§11.2 b)
     coverage_pct: Percent | None = None
 
+    @property
+    def red_stage(self) -> VerifyStage | None:
+        """The pre-test stage that failed, if one did (the tests then never ran)."""
+        failed = [s.stage for s in self.stages if not s.passed]
+        return failed[0] if failed else None
+
     @model_validator(mode="after")
     def _check(self) -> Self:
         if self.passing_ids & self.flaky_ids:
             raise ValueError("a flaky test cannot be in the passing set P0")
+        if self.stages[0].stage is not VerifyStage.INSTALL:
+            raise ValueError("a baseline starts with the install stage")
+        if any(s.stage is VerifyStage.TESTS for s in self.stages):
+            raise ValueError("stages holds the pre-test stages; test runs go in `runs`")
+        order = [list(VerifyStage).index(s.stage) for s in self.stages]
+        if order != sorted(set(order)):
+            raise ValueError("stages are in pipeline order, each at most once")
+        failed = [i for i, s in enumerate(self.stages) if not s.passed]
+        if failed:
+            if failed[0] != len(self.stages) - 1:
+                raise ValueError("the pipeline stops at the first failing stage")
+            if self.runs or self.passing_ids or self.flaky_ids or self.test_count:
+                raise ValueError("a baseline red before the tests has no test results")
+        elif not self.runs:
+            raise ValueError("a baseline whose stages passed has its test runs (FR-4)")
         return self
 
 
 # ---------------------------------------------------------------- plan, attempts, diagnosis
+
+
+#: H8 flags (FR-8, A11): refused in `install_deps`, `run_command` and the bump unless a plan
+#: step justifies that exact flag; the PR shows the justification.
+H8_FLAGS = frozenset({"--force", "--legacy-peer-deps", "--no-verify"})
 
 
 class Step(DomainModel):
@@ -283,8 +352,21 @@ class Step(DomainModel):
     target_files: list[str] = Field(default_factory=list)
     rationale: str
     changelog_refs: list[str] = Field(default_factory=list)
+    #: H8 flag -> why this step needs it. Part of the plan a human approves at CP-1, so the
+    #: approval covers it; `ToolContext.flag_justifications` is the running step's map and
+    #: `GateInput.flag_justifications` the union over the plan's steps.
+    flag_justifications: dict[str, str] = Field(default_factory=dict)
     status: StepStatus = StepStatus.PENDING
     attempts: NonNegInt = 0
+
+    @model_validator(mode="after")
+    def _check(self) -> Self:
+        unknown = set(self.flag_justifications) - H8_FLAGS
+        if unknown:
+            raise ValueError(f"not H8 flags: {sorted(unknown)} (known: {sorted(H8_FLAGS)})")
+        if any(not why.strip() for why in self.flag_justifications.values()):
+            raise ValueError("a flag justification cannot be empty")
+        return self
 
 
 class Plan(DomainModel):
@@ -294,6 +376,26 @@ class Plan(DomainModel):
     risks: list[str] = Field(default_factory=list)
     changelog_refs: list[str] = Field(default_factory=list)
     approved: bool | None = None  # None until a human decides (CP-1)
+
+    @model_validator(mode="after")
+    def _check(self) -> Self:
+        ids = [s.id for s in self.steps]
+        orders = [s.order for s in self.steps]
+        if len(set(ids)) != len(ids):
+            raise ValueError("plan step ids are unique")
+        if len(set(orders)) != len(orders):
+            raise ValueError("plan step orders are unique (steps begin in plan order, §9.5)")
+        return self
+
+    @property
+    def flag_justifications(self) -> dict[str, str]:
+        """The union over the steps (`GateInput.flag_justifications`); a flag justified by two
+        steps keeps both reasons."""
+        merged: dict[str, list[str]] = {}
+        for step in sorted(self.steps, key=lambda s: s.order):
+            for flag, why in step.flag_justifications.items():
+                merged.setdefault(flag, []).append(why)
+        return {flag: " / ".join(whys) for flag, whys in merged.items()}
 
 
 class Diagnosis(DomainModel):

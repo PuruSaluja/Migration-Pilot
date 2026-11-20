@@ -227,12 +227,17 @@
             'targeted',
             'full',
             'final',
+            'rerun',
           ]),
           'title': 'TestStage',
           'type': 'string',
         }),
         'VerifyResult': dict({
           'additionalProperties': False,
+          'description': '''
+            One pipeline run (FR-11): stages in order, stopping at the first failing one. `tests`
+            is the test run, present exactly when the pipeline reached the tests stage.
+          ''',
           'properties': dict({
             'stages': dict({
               'items': dict({
@@ -269,6 +274,11 @@
         }),
         'VerifyStageResult': dict({
           'additionalProperties': False,
+          'description': '''
+            One pipeline stage. For TESTS, `passed` is the test runner's own verdict and is only
+            informational: whether the tests are green (§7.4 loop exit, push) is decided against
+            `P0 \ flaky` by the orchestrator and gate checks (a)/(b), never by this flag.
+          ''',
           'properties': dict({
             'duration_s': dict({
               'default': 0.0,
@@ -513,12 +523,87 @@
             'targeted',
             'full',
             'final',
+            'rerun',
           ]),
           'title': 'TestStage',
           'type': 'string',
         }),
+        'VerifyStage': dict({
+          'description': 'Verification stages in order (§7.4 attempt scoring: install < build < typecheck < tests).',
+          'enum': list([
+            'install',
+            'build',
+            'typecheck',
+            'tests',
+          ]),
+          'title': 'VerifyStage',
+          'type': 'string',
+        }),
+        'VerifyStageResult': dict({
+          'additionalProperties': False,
+          'description': '''
+            One pipeline stage. For TESTS, `passed` is the test runner's own verdict and is only
+            informational: whether the tests are green (§7.4 loop exit, push) is decided against
+            `P0 \ flaky` by the orchestrator and gate checks (a)/(b), never by this flag.
+          ''',
+          'properties': dict({
+            'duration_s': dict({
+              'default': 0.0,
+              'minimum': 0,
+              'title': 'Duration S',
+              'type': 'number',
+            }),
+            'exit_code': dict({
+              'anyOf': list([
+                dict({
+                  'type': 'integer',
+                }),
+                dict({
+                  'type': 'null',
+                }),
+              ]),
+              'default': None,
+              'title': 'Exit Code',
+            }),
+            'failure_signature': dict({
+              'anyOf': list([
+                dict({
+                  'type': 'string',
+                }),
+                dict({
+                  'type': 'null',
+                }),
+              ]),
+              'default': None,
+              'title': 'Failure Signature',
+            }),
+            'log_tail': dict({
+              'default': '',
+              'title': 'Log Tail',
+              'type': 'string',
+            }),
+            'passed': dict({
+              'title': 'Passed',
+              'type': 'boolean',
+            }),
+            'stage': dict({
+              '$ref': '#/$defs/VerifyStage',
+            }),
+          }),
+          'required': list([
+            'stage',
+            'passed',
+          ]),
+          'title': 'VerifyStageResult',
+          'type': 'object',
+        }),
       }),
       'additionalProperties': False,
+      'description': '''
+        FR-4 on the unmodified repo. A baseline that went red before the tests (install,
+        build or typecheck failed) is still a `Baseline`: its `stages` end with the failing one
+        and it has no test runs, so BASELINE_RED always has a stored record behind it.
+      ''',
       'properties': dict({
         'coverage_pct': dict({
           'anyOf': list([
@@ -558,8 +643,15 @@
           'items': dict({
             '$ref': '#/$defs/TestResult',
           }),
-          'minItems': 1,
           'title': 'Runs',
+          'type': 'array',
+        }),
+        'stages': dict({
+          'items': dict({
+            '$ref': '#/$defs/VerifyStageResult',
+          }),
+          'minItems': 1,
+          'title': 'Stages',
           'type': 'array',
         }),
         'test_count': dict({
@@ -577,7 +669,7 @@
       }),
       'required': list([
         'run_id',
-        'runs',
+        'stages',
         'passing_ids',
         'flaky_ids',
         'test_file_hashes',
@@ -1742,6 +1834,13 @@
               'title': 'Description',
               'type': 'string',
             }),
+            'flag_justifications': dict({
+              'additionalProperties': dict({
+                'type': 'string',
+              }),
+              'title': 'Flag Justifications',
+              'type': 'object',
+            }),
             'id': dict({
               'title': 'Id',
               'type': 'string',
@@ -2588,6 +2687,13 @@
           'title': 'Description',
           'type': 'string',
         }),
+        'flag_justifications': dict({
+          'additionalProperties': dict({
+            'type': 'string',
+          }),
+          'title': 'Flag Justifications',
+          'type': 'object',
+        }),
         'id': dict({
           'title': 'Id',
           'type': 'string',
@@ -2659,6 +2765,7 @@
             'targeted',
             'full',
             'final',
+            'rerun',
           ]),
           'title': 'TestStage',
           'type': 'string',
@@ -3000,6 +3107,7 @@
             'targeted',
             'full',
             'final',
+            'rerun',
           ]),
           'title': 'TestStage',
           'type': 'string',
@@ -3017,6 +3125,11 @@
         }),
         'VerifyStageResult': dict({
           'additionalProperties': False,
+          'description': '''
+            One pipeline stage. For TESTS, `passed` is the test runner's own verdict and is only
+            informational: whether the tests are green (§7.4 loop exit, push) is decided against
+            `P0 \ flaky` by the orchestrator and gate checks (a)/(b), never by this flag.
+          ''',
           'properties': dict({
             'duration_s': dict({
               'default': 0.0,
@@ -3070,6 +3183,10 @@
         }),
       }),
       'additionalProperties': False,
+      'description': '''
+        One pipeline run (FR-11): stages in order, stopping at the first failing one. `tests`
+        is the test run, present exactly when the pipeline reached the tests stage.
+      ''',
       'properties': dict({
         'stages': dict({
           'items': dict({
@@ -3108,6 +3225,11 @@
         }),
       }),
       'additionalProperties': False,
+      'description': '''
+        One pipeline stage. For TESTS, `passed` is the test runner's own verdict and is only
+        informational: whether the tests are green (§7.4 loop exit, push) is decided against
+        `P0 \ flaky` by the orchestrator and gate checks (a)/(b), never by this flag.
+      ''',
       'properties': dict({
         'duration_s': dict({
           'default': 0.0,

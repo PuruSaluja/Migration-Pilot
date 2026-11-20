@@ -1,8 +1,8 @@
 # Architecture
 
-Status: §4–§11 are **real code** (P1-07: §4–§6, §8; P1-08: §7, §9–§11). Signatures below are summaries; the docstrings in the named modules are authoritative. §11's knowledge interfaces are explicitly **drafts** that Phases 2–5 may extend, recording the change here.
-P1-12 freezes them once `spec-reviewer` approves.
-After the freeze, changing an interface is a spec change (SPEC §18 rule 5).
+Status: **frozen at the Phase 1 gate (P1-12d, 2026-11-20).** §4–§11 are real code (P1-07: §4–§6, §8; P1-08: §7, §9–§11; P1-12a–d: the gate fixes). Signatures below are summaries; the docstrings in the named modules are authoritative.
+Changing a frozen interface is a spec change (SPEC §18 rule 5): record it in `PROGRESS.md` (and in SPEC §20 when it touches a [REC] decision or §12), update this file in the same change, and have `spec-reviewer` check it.
+Still **drafts**, which later phases may change by recording it here: §11's knowledge interfaces (Phases 2–5), `RunStore.add_eval`/`evals` and `EvalResult` (P9-01), and the `run_events` table behind `EventBus` (P3-05). Migration `0001` is frozen too: schema changes are new revisions.
 The signatures assume the proposals in `docs/decisions.md`, referenced below as A1, B2 and so on.
 
 ## 1. Processes and trust boundaries
@@ -163,11 +163,14 @@ request's schema (COMPLETED or SCHEMA_INVALID). After the last turn, `raises` fi
 class ScriptedToolCall(BaseModel, frozen=True):   # name is exactly what the model sends: "Bash" is a valid script
     name: str; args: dict; expect_decision: PolicyDecision | None; expect_deny_code: str | None; expect_output: dict | None
 class ScriptedTurn(BaseModel, frozen=True):       # tool calls XOR a final answer
-    tool_calls: tuple[ScriptedToolCall, ...]; final: dict | None; usage: Usage
+    tool_calls: tuple[ScriptedToolCall, ...]
+    final: dict | str | None                      # str = raw text: SCHEMA_INVALID unless it parses to a fitting object
+    usage: Usage | None                           # None = no per-turn usage: guard.after_turn(None)
 class ScriptedCall(BaseModel, frozen=True):
     turns: tuple[ScriptedTurn, ...]; raises: RaiseKind | None; raise_message: str; expect_role: Role | None
     model_id: str | None; models_seen_extra: tuple[str, ...]; thinking_enabled: bool   # overrides, to build results
     effort_applied: Effort | None; latency_ms: int                                    # check_result must reject
+    total_usage: Usage | None                     # the call's usage as finally reported; None = sum of the turns
     @classmethod def answer(output, **kw); @classmethod def using(*tool_calls, then=output, **kw)
 class RaiseKind(StrEnum): USAGE_LIMIT; RUNTIME_ERROR
 def tool(name: str, **args) -> ScriptedToolCall: ...      # exposes it as mcp__mpilot__<name>
@@ -298,7 +301,7 @@ class ToolContext(BaseModel, frozen=True):           # built by the orchestrator
     parent_call_id: LLMCallId | None                 # set exactly with caller: the call that ran explore
     step_id: StepId | None; step_type: StepType | None; attempt_id: AttemptId | None
     step_target_files: frozenset[str]                # test_touch: the only test files writable (H3)
-    flag_justifications: Mapping[str, str]           # H8 (A11)
+    flag_justifications: Mapping[str, str]           # H8 (A11): the running step's Step.flag_justifications
     max_tool_calls: int                              # remaining per-attempt allowance (§8.3); every
                                                      # invocation counts, denied ones too
 
@@ -427,7 +430,8 @@ class WorkspaceDiff(BaseModel, frozen=True):         # between two host mirror c
     files: list[FileChange]                          # sorted, unique
 class TestCounts(BaseModel, frozen=True): passed; failed; skipped; errors          # runner log summary
 class FinalVerification(BaseModel, frozen=True):     # fresh sandbox from mirror_commit (§9.5)
-    mirror_commit: str; verify: VerifyResult; tests: TestResult       # tests.stage == final
+    mirror_commit: str; verify: VerifyResult       # whole pipeline from install; verify.tests.stage == final
+    tests -> TestResult | None                     # = verify.tests; None if red before the tests (final_red)
     runner_exit_code: int | None; runner_summary: TestCounts | None   # (a) cross-check
     resolved_versions: dict[str, str]; coverage_pct: float | None     # (g), (f) extra run
     cache: Literal["fresh", "hash_verified"]
@@ -451,8 +455,9 @@ class GateInput:
     classifier: TestFileClassifier
     allowed_files: frozenset[str]                    # §11.3 control 5
     diff_limits: DiffSettings                        # NFR-8
-    step_diffs: Sequence[tuple[StepId, WorkspaceDiff]]   # plan order; test_touch hunk mapping (d)
-    flag_justifications: Mapping[str, str]           # H8 (A11)
+    step_diffs: Sequence[tuple[StepId, WorkspaceDiff]]   # chained segments, each tagged with its step; a step
+                                                         # may recur (repair, revise); test_touch hunk mapping (d)
+    flag_justifications: Mapping[str, str]           # H8 (A11): Plan.flag_justifications, the union over steps
     removed_api_patterns: Sequence[ApiPattern]       # D3
 
 class PolicyCheck(Protocol):
@@ -462,8 +467,10 @@ class PolicyCheck(Protocol):
 def binding_violations(inp: GateInput) -> list[Violation]: ...
     # "gate" violations: final run, commit_tree, diff target/digest not the pushed commit
     # (commit_mismatch); diff base or base_tree not base_sha (base_mismatch); plan of another
-    # run (run_mismatch); step_diffs not one chain of plan steps, in plan order, from base_sha
-    # to the pushed tree, or changes with no step diffs (step_chain)
+    # run, or a final test run of another run (run_mismatch); a final run with no test run, red
+    # before the tests (final_red); step_diffs not one unbroken chain from base_sha to the pushed tree, a
+    # segment for a non-plan step, steps beginning out of plan order, or changes with no step
+    # diffs (step_chain)
 def evaluate_gate(checks, inp, *, required) -> IntegrityReport: ...
     # binding_violations first, then every check; ValueError on no checks, empty `required`
     # (no default: the gate can't pass by running nothing), duplicate, reserved ("gate") or
@@ -551,6 +558,8 @@ class Orchestrator(Protocol):
         # records the request (durable); no-op if ended; no live driver -> take the lease, reap,
         # END_CANCELLED; a live one -> wait until the run ends or its lease expires, then take over
 
+class AttemptNumbers(BaseModel, frozen=True): n: int; n_in_step: int   # one counter update, n_in_step <= n
+
 class CallEstimate(BaseModel, frozen=True):          # B2: turn k costs prompt + (k-1)*tool + output
     prompt_tokens: int; tool_output_per_turn: int; output_ceiling: int; requested_turns: int
     def tokens_for(self, turns: int) -> int: ...
@@ -562,7 +571,7 @@ class BudgetManager(Protocol):                       # never downgrades: refuses
                                                                # nested calls (explore) kept apart
     def guard(self, call_id: LLMCallId) -> BudgetGuard: ...    # §4; KeyError if never prechecked
     def record_call(self, call_id: LLMCallId, usage: Usage, turns: int, api_equiv_usd: float) -> None: ...
-    def start_attempt(self, step_id: StepId) -> int: ...      # run-wide n; AttemptCapError at 6/40
+    def start_attempt(self, step_id: StepId) -> AttemptNumbers: ...   # (n, n_in_step); AttemptCapError at 6/40
     def record_sandbox_seconds(self, seconds: float) -> None: ...
     def pause(self) -> None: ...; def resume(self) -> None: ...; def check_time(self) -> None: ...
 
@@ -591,7 +600,8 @@ class RunStore(Protocol):                            # SQLite WAL (P1-10); every
     def request_plan_decision(self, run_id: RunId, *, approve: bool, reason: str | None = None) -> RunControl: ...
                                                                     # only in AWAITING_APPROVAL, only once
     def append(self, row: AppendRow, *, lease: Lease) -> None: ...
-    def put(self, row: SingleRow, *, lease: Lease) -> None: ...     # a Plan's approved must match plan_problem
+    def put(self, row: SingleRow, *, lease: Lease) -> None: ...     # a Plan's approved must match plan_problem;
+                                                                    # a Baseline once per run, never replaced
     def rows(self, run_id: RunId, kind: type[RowT]) -> Sequence[RowT]: ...
     def append_final_verification(self, run_id: RunId, result: FinalVerification, *, lease: Lease) -> None: ...
     def final_verifications(self, run_id: RunId) -> Sequence[FinalVerification]: ...             # oldest first
@@ -601,6 +611,7 @@ class RunStore(Protocol):                            # SQLite WAL (P1-10); every
         # status/paused/spent/terminal_reason -> a terminal checkpoint releases the lease
     def latest_checkpoint(self, run_id: RunId) -> Checkpoint | None: ...
     def add_eval(self, result: EvalResult) -> None: ...; def evals(self, suite: str) -> Sequence[EvalResult]: ...
+        # DRAFT until P9-01: EvalResult gains run_id and bench_id (new migration); these may change
 
 # models/coordination.py (P1-12c): pure rules both stores apply
 class PlanDecision(StrEnum): APPROVE; REJECT
@@ -626,8 +637,10 @@ def run_following(run: Run, cp: Checkpoint) -> Run: ...   # CHECKPOINT_OWNED = s
 
 class EventKind(StrEnum): STATE_CHANGED; ROUTING_DECISION; LLM_CALL; TOOL_CALL; VERIFY; CHECKPOINT; APPROVAL_REQUESTED; LOG
 class RunEventRecord(BaseModel, frozen=True): run_id: RunId; seq: int; at: datetime; kind: EventKind; data: dict
-class EventBus(Protocol):
-    def publish(self, run_id: RunId, kind: EventKind, data: dict[str, Any]) -> RunEventRecord: ...   # assigns seq
+class EventBus(Protocol):                          # durable first: publish writes run_events (P3-05, new
+                                                   # migration), then fans out; events are a view, never state
+    def publish(self, run_id: RunId, kind: EventKind, data: dict[str, Any], *, lease: Lease) -> RunEventRecord: ...
+        # assigns seq; fenced like every write of run state
     def subscribe(self, run_id: RunId, *, after_seq: int = 0) -> AsyncIterator[RunEventRecord]: ...  # replay + live
 
 # models/state.py
@@ -779,7 +792,8 @@ Test doubles: `DictTable`, `ScriptedOrchestrator`, `SimpleBudget`, `MemoryStore`
 ```python
 class Verifier(Protocol):
     async def baseline(self, sb: Sandbox, ws: Workspace, env: EnvProfile, classifier: TestFileClassifier,
-                       *, run_id: RunId, runs: int = 3) -> Baseline: ...      # FR-4, D4, D9
+                       *, run_id: RunId, runs: int = 3) -> Baseline: ...      # FR-4, D4, D9; never raises for
+                                                   # red: Baseline.stages ends with a failing pre-test stage
     async def verify(self, sb: Sandbox, ws: Workspace, env: EnvProfile, *, run_id: RunId, attempt_id: AttemptId | None,
                      manifests_changed: bool, selector: Sequence[str] | None, full: bool) -> VerifyResult: ...
     async def final_verify(self, driver: SandboxDriver, mirror: Mirror, env: EnvProfile, *,

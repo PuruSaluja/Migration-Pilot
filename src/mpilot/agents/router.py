@@ -251,8 +251,13 @@ class RoutingCounters(_Frozen):
 
 
 class RoutingContext(_Frozen):
-    """Routing inputs (§8.4 `ctx`). Built by the orchestrator from state, never from model
-    output except the self-reported confidences, which only ever push towards Opus/high.
+    """Routing inputs (§8.4 `ctx`). Built by the orchestrator from state. Some inputs come
+    from model output: the self-reported `last_confidence`, which only ever pushes towards
+    Opus/high, and the Diagnoser's `diagnosis_confidence`, `failure_category` and expected
+    edit size, which can also enable Sonnet or medium. The latter are validated against the
+    output schema and the medium/Sonnet conditions need several of them at once (§8.4);
+    `has_changelog_mapping`/`error_maps_to_changelog` come from the host's changelog index,
+    never from a model's claim (P1-12d decision; P5-11 builds them that way).
 
     Counters are 1-based for the current call; 0 means "not in a step" / "no signature yet".
     """

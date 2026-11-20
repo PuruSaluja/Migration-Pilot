@@ -1,15 +1,19 @@
 # PROGRESS.md
 
 ## Current phase
-Phase 1: Foundations
+Phase 2: Sandbox, detection, baseline (Phase 1 gate passed 2026-11-20)
 
 ## Next task
-[OPUS] P1-12d: **Phase 1 gate:** full spec-reviewer re-review of the interface set; decide S2-S5 (see the P1-12a decisions below); freeze `docs/architecture.md` and migration 0001 (from then on every schema change is a new revision). Acceptance: `mpilot --help` works; checks green; spec-reviewer approves. Run on Opus 5.5 at high effort.
+[OPUS] P2-01: host-side `Workspace` (A1), tests first: `openat2` RESOLVE_BENEATH/NO_SYMLINKS/NO_MAGICLINKS + S_ISREG; `walk_tree` (FR-10, NFR-6). Acceptance: rejected `..`, absolute paths, symlinked files/dirs/parents, a symlink swapped in mid-operation, FIFOs, devices, setuid files; read size capped; every write returns a unified diff; `walk_tree` never follows links. Interfaces are frozen (`docs/architecture.md`): implement `sandbox/base.py`'s `Workspace` as specified; any interface change is a spec change. Run on Opus 5.5 at high effort.
 
 ## In progress
 (none)
 
 ## Done
+- P1-12d (2026-11-20): **Phase 1 gate passed.** Spec-reviewer full interface review: pass 1 CHANGES REQUIRED (B1 `FinalVerification` couldn't represent a red pre-test final run and held two copies of the test run; B2 no home for H8 justifications), pass 2 one new blocker (N1: the push's "green" counted a failed TESTS stage, which would block a push when only a baseline-flaky test fails), pass 3 APPROVED.
+  - S2-S5 decided: `EventBus` durable-first and fenced (`publish(..., lease=)`; `run_events` table with the bus in P3-05); `add_eval`/`evals`/`EvalResult` marked P9-01 drafts; cassette v1 (`ScriptedTurn.usage: Usage | None`, raw-text `final`, `ScriptedCall.total_usage`, required when a turn has no usage); gate step diffs are chained per-step segments (a step may recur; steps begin in plan order); `Baseline.stages` (a baseline red before the tests is a stored record).
+  - Review fixes: `VerifyResult` pipeline rules + `red_stage`/`red_before_tests`; `FinalVerification.tests` is a property over `verify.tests`, the pipeline starts at install; gate `final_red`, `final_incomplete` (a stage the repo's env has was skipped), `run_mismatch` on the final test run; push "green" = no pre-test stage failed + a test run; `Step.flag_justifications` (H8 flags only) + `Plan.flag_justifications`; unique plan step ids/orders; baseline insert-once; `TestStage.RERUN`; `AttemptNumbers` from `start_attempt`; `record_call` reconciliation rule; router docstring.
+  - Freeze: `docs/architecture.md` status (frozen, named drafts), migration 0001 frozen with a SHA-256 pin test. SPEC §9.5, §12, §13.1 untouched beyond the noted lines, three §20 rows. 1468 green; mutation checks on every new rule caught.
 - P1-12c (2026-11-20): Phase 1 gate fix B5, process coordination. Spec-reviewer: pass 1 CHANGES REQUIRED (4 blockers: two CP-1 bypasses via PAUSED_LIMIT and terminal states, same-holder lease re-entry, cancel not reaching a non-checkpointing driver), pass 2 APPROVED; its non-blocking points applied or deferred below.
   - `models/coordination.py` (pure, shared by both stores): `Lease` (fencing token, expiry, release), `RunControl` (cancel request, plan decision), `PlanDecision`, `Renewal`, `take_lease` (any live lease refuses, whatever the holder name), `check_fence` (expiry alone never refuses a write), `renew`, `transition_problems` (effective states; END_CANCELLED needs a request, END_REJECTED a reject, leaving AWAITING_APPROVAL anything but END_ERROR/END_BUDGET_EXCEEDED an approve), `plan_problem`, `run_following` + `CHECKPOINT_OWNED`.
   - `RunStore` (protocol, SQLite, MemoryStore): every write of run state takes `lease=` and is fenced in its own transaction; `acquire_lease`/`renew_lease` (returns the run's requests)/`release_lease`/`current_lease`/`control`/`request_cancel`/`request_plan_decision`. `checkpoint(cp, *, lease, rows=())`: a recorded cancel refuses all but END_CANCELLED (`CancelRequestedError`); rows + checkpoint + the run's status/paused/spent/terminal reason in one transaction; a terminal checkpoint releases the lease and nothing can follow it. `save_run` can't change those fields. `Checkpoint.terminal_reason`.
@@ -124,7 +128,7 @@ Phase 1: Foundations
 
 - 2026-11-20 (P1-12a), design points for the owner:
   - **`runtime.anthropic_env` is gone** (the P1-05/P1-06 notes above describe it; they are superseded). The SDK's model variables are fixed in code. If P4-01 finds another model variable, it is added to `SDK_MODEL_PIN_TIERS`. `ANTHROPIC_MODEL` is refused: the router sets the model per call.
-  - **Migration 0001 was amended in place, not followed by 0002.** No database exists outside tests, and this gate is the freeze point. From the gate on, schema changes are new revisions (the 0001 docstring and docs say so). P1-12b may amend it once more, still pre-freeze.
+  - **Migration 0001 was amended in place, not followed by 0002.** No database exists outside tests, and this gate is the freeze point. From the gate on, schema changes are new revisions (the 0001 docstring and docs say so). P1-12b, P1-12c and P1-12d amended it further; it is now frozen (P1-12d), and a test pins its SHA-256.
   - Deferred from the P1-12a review, for later tasks:
     - P7-01: the Critic's model `output_schema` must not contain `mirror_commit`/`run_id`. The host sets them from `WorkspaceDiff.target`. Consider binding the verdict to `diff.base` too, so approving a partial (step) diff can't stand in for approving the whole `base_sha -> commit` diff.
     - P1-12d: consider `BudgetManager.start_attempt` returning `(n, n_in_step)`, so callers can't derive them inconsistently.
@@ -148,6 +152,12 @@ Phase 1: Foundations
   - Lease TTL default 60 s, renewed at least every 20 s (SPEC §10.1); it's a parameter for now.
   - Deferred to P3-05 (driver), from both review passes: make the lease TTL a setting; bind the plan decision to a plan id (today `plan_problem` checks only the bool, so steps could change after approval) and record `approval_required` on `Run` so PLANNED -> BUMPED can be refused when `--approve-plan` was asked; driver-level tests for `mpilot cancel` during a long tool call, during an approval wait, and a pause/teardown still holding the lease (the P1-12c tests hand-code the driver loop, so they prove the store contract only).
   - For P8-02: `POST /runs/{id}/cancel` records the request and returns 202 while a live driver exists.
+
+- 2026-11-20 (P1-12d), design points for the owner:
+  - **The interfaces and migration 0001 are frozen.** Changing one is a spec change: a PROGRESS decision (a §20 row for §12/[REC]), the doc updated in the same change, a spec-reviewer pass. Schema changes are new revisions.
+  - **A failed TESTS stage never decides success by itself**: the runner's verdict is informational; tests are judged against `P0 \ flaky` by gate (a)/(b). Success and the push need no failed pre-test stage, a final test run, the repo's own build/typecheck stages, and a passing report.
+  - `has_changelog_mapping`/`error_maps_to_changelog` come from the host's changelog index, never from a model's claim (stricter than B9; P5-11 must build them that way).
+  - Deferred, with named owners: store-level END_SUCCESS evidence to **P7-02** (a system-aware `success_problems` shared with `push_branch`: B0/B1 need a passing gate and a green final run; Full also an approving verdict on the same `mirror_commit` and `report.checks` covering the phase's required set). Not now: it would block B0/B1 (no Critic) and every run before Phase 7. The P3-05 plan-decision binding stays additive (the store captures a plan-steps hash at decision time; `request_plan_decision` keeps its signature).
 
 ## Task list
 
@@ -183,7 +193,7 @@ How to read it:
 | P1-12a | OPUS | Gate fixes B4 (no `ANTHROPIC_*` passthrough), B6 (call-order contract), B2 (run-wide `Attempt.n`), B1+S1 (report/verdict bound to the commit) | §8.1, §9.5, §12 | P1-01…11 | Done 2026-11-20; spec-reviewer approved the diff |
 | P1-12b | OPUS | Gate fix B3: resume completeness (completed role-call outputs and stop reasons on `LLMCall`, `ToolCall.role_call_id`, per-scope routing counters in `Checkpoint`) | FR-21, FR-18, §8.4, §12 | P1-12a | Done 2026-11-20; spec-reviewer approved the diff (second pass) |
 | P1-12c | OPUS | Gate fix B5: process coordination (driver lease on `RunStore`, cancel request, `save_run` only by the lease holder or compare-and-set, checkpoint authoritative with `Run` updated in the same transaction; `decide_plan`/`cancel` semantics with and without a live driver) | §13.1, FR-21, NFR-4, C6 | P1-12b | Done 2026-11-20; spec-reviewer approved the diff (second pass) |
-| P1-12d | OPUS | **Phase 1 gate:** full spec-reviewer re-review of the interface set; decide S2–S5; freeze `docs/architecture.md` | §16.4 P1 DoD | P1-12c | `mpilot --help` works; checks green; spec-reviewer approves |
+| P1-12d | OPUS | **Phase 1 gate:** full spec-reviewer re-review of the interface set; decide S2–S5; freeze `docs/architecture.md` | §16.4 P1 DoD | P1-12c | Done 2026-11-20; spec-reviewer approved (third pass) |
 
 ### Phase 2: Sandbox, detection, baseline
 | ID | Tag | Task | Refs | Deps | Acceptance |
@@ -274,7 +284,7 @@ How to read it:
 | P5-08 | OPUS | Analyzer prompt + `AnalysisReport` schema | §8.2 | FakeRuntime and cassette tests; schema snapshots |
 | P5-09 | OPUS | Planner prompt + Plan schema and validation | FR-7 | Schema-valid; every `edit_cluster` cites a usage site or a failure |
 | P5-10 | OPUS | `--approve-plan` + `mpilot approve` (AWAITING_APPROVAL, END_REJECTED) | FR-7, CP-1, US-2 | The run blocks until approved; reject → END_REJECTED; interrupt → exit 130 (C6) |
-| P5-11 | OPUS | Router v1 part 1: the 8 tier-escalation triggers + stickiness | FR-22, §8.4 | A unit test per trigger; never de-escalates |
+| P5-11 | OPUS | Router v1 part 1: the 8 tier-escalation triggers + stickiness; `has_changelog_mapping`/`error_maps_to_changelog` from the host changelog index only (P1-12d) | FR-22, §8.4 | A unit test per trigger; never de-escalates |
 | P5-12 | OPUS | Router v1 part 2: strict effort rules + effort escalation | FR-22, §8.4 | A unit test per medium condition and per effort trigger; property tests for every invariant |
 | P5-13 | OPUS | Loop guards: oscillation (diff hash), regression revert-to-best (§7.4) from host attempt refs | FR-13, §7.4, §9.5 | Scripted oscillation and regression scenarios; revert restores the best attempt's tree exactly |
 | P5-14 | SONNET | Migration notes (≤ 2k), failure history, escalation `report.md`, WIP branch, `needs-human` PR only with `--pr-on-failure` | FR-17, §10.1 | Report lists failing tests, top 3 hypotheses, attempts, budget; no PR without the flag |
@@ -303,7 +313,7 @@ How to read it:
 | ID | Tag | Task | Refs | Acceptance |
 |---|---|---|---|---|
 | P7-01 | OPUS | Critic: fresh context, hunk mapping, masking-pattern checks, cites files it read itself | FR-15, §8.2, §8.5 | Scripted diffs with masking patterns are flagged |
-| P7-02 | OPUS | Revise loop (max 1) in the state machine | FR-15, §7.4 | Second revise → ESCALATED; verdict in the PR |
+| P7-02 | OPUS | Revise loop (max 1) in the state machine; system-aware `success_problems` shared by `push_branch` and the END_SUCCESS checkpoint (P1-12d) | FR-15, §7.4 | Second revise → ESCALATED; verdict in the PR |
 | P7-03 | SONNET | PR Writer + §13.4 template (F4), H8 justifications, routing stats | FR-16, §13.4, H8 | Template validation; deterministic sections snapshot-tested |
 | P7-04 | SONNET | Crash resume (kill -9 mid-run): restore the last attempt snapshot, restart the interrupted attempt | NFR-4, §10.1 | Kill-and-resume completes a run; partial effects of the in-flight tool call are gone |
 | P7-05 | SONNET | OTel spans + Langfuse export (E4) | NFR-7, FR-18 | Spans for every model and tool call; redacted |

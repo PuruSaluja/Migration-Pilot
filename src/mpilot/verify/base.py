@@ -35,9 +35,11 @@ class Verifier(Protocol):
         runs: int = 3,
     ) -> Baseline:
         """FR-4: install -> build -> typecheck -> test `runs` times on the unmodified repo,
-        plus one coverage run (D4). Records P0 (passing in every run), flaky ids, the
-        executed count (highest run, D9) and test-file hashes from the host walk (§11.2).
-        A red or > 5% flaky baseline is reported in the result; the caller ends the run."""
+        plus one coverage run (D4). Records the stage results, P0 (passing in every run),
+        flaky ids, the executed count (highest run, D9) and test-file hashes from the host
+        walk (§11.2). Never raises for a red baseline: a failing install, build or typecheck
+        ends the pipeline there (`Baseline.red_stage`, no test runs), red or > 5% flaky
+        tests are in `runs`; the caller stores it and ends the run END_BASELINE_RED."""
         ...
 
     async def verify(

@@ -184,6 +184,10 @@ class VcsAdapter(Protocol):
           the Critic reviewed (§9.5). A passing report or approving verdict from an earlier
           INTEGRITY_CHECK pass names an older commit, so it can never be paired with this one
         - `report.passed` (the integrity gate) and `verdict.decision` is approve (FR-15)
+        - `verified` is green: no stage before the tests failed and it has a test run
+          (`red_before_tests`, §7.4 Success). Test outcomes are not judged here: they are
+          judged against `P0 \\ flaky` by gate checks (a)/(b), which `report.passed` covers,
+          so a baseline-flaky test failing in the final run does not block the push
         - `verified`, `report` and `verdict` belong to the same run
         """
         ...

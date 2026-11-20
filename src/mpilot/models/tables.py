@@ -376,7 +376,7 @@ class DbTestResult(_Append, Base):
     __table_args__ = (
         Index("ix_test_results_run_id_stage_seq", "run_id", "stage", "seq"),
         CheckConstraint(
-            _in("stage", ("baseline", "targeted", "full", "final")), name="stage_known"
+            _in("stage", ("baseline", "targeted", "full", "final", "rerun")), name="stage_known"
         ),
         CheckConstraint(
             "passed >= 0 AND failed >= 0 AND skipped >= 0 AND errors >= 0 AND duration_s >= 0",

@@ -92,8 +92,9 @@ def _verify() -> d.VerifyResult:
     return d.VerifyResult(
         stages=[
             d.VerifyStageResult(stage=d.VerifyStage.INSTALL, passed=True, exit_code=0),
+            d.VerifyStageResult(stage=d.VerifyStage.BUILD, passed=True, exit_code=0),
             d.VerifyStageResult(
-                stage=d.VerifyStage.BUILD, passed=False, exit_code=1, failure_signature="sig"
+                stage=d.VerifyStage.TESTS, passed=False, exit_code=1, failure_signature="sig"
             ),
         ],
         tests=_tests(d.TestStage.TARGETED),
@@ -213,6 +214,7 @@ SAMPLES: dict[type[d.DomainModel], Callable[[], d.DomainModel]] = {
     d.VerifyResult: _verify,
     d.Baseline: lambda: d.Baseline(
         run_id=RUN,
+        stages=[d.VerifyStageResult(stage=d.VerifyStage.INSTALL, passed=True)],
         runs=[_tests(), _tests()],
         passing_ids=frozenset({"a::t1", "b::t2"}),
         flaky_ids=frozenset({"f::t9"}),
@@ -385,6 +387,7 @@ SECTION_12_FIELDS: dict[str, set[str]] = {
         "detection_sources",
     },
     "Baseline": {
+        "stages",
         "runs",
         "passing_ids",
         "flaky_ids",
@@ -765,3 +768,124 @@ def test_a_sha_with_a_trailing_newline_is_not_a_sha() -> None:
         art._check_git_sha(SHA + "\n")
     with pytest.raises(ValidationError):
         _integrity(mirror_commit=SHA + "\n")
+
+
+# ---------------------------------------------------------------- baseline stages (S5)
+
+
+def _stage(stage: d.VerifyStage, passed: bool = True) -> d.VerifyStageResult:
+    return d.VerifyStageResult(stage=stage, passed=passed)
+
+
+def test_a_baseline_red_before_the_tests_is_still_a_baseline() -> None:
+    """S5 (P1-12d): a failing install, build or typecheck at baseline has a stored record."""
+    red = d.Baseline(
+        run_id=RUN,
+        stages=[_stage(d.VerifyStage.INSTALL), _stage(d.VerifyStage.BUILD, passed=False)],
+        passing_ids=frozenset(),
+        flaky_ids=frozenset(),
+        test_file_hashes={},
+        test_count=0,
+    )
+    assert red.red_stage is d.VerifyStage.BUILD
+    green = SAMPLES[d.Baseline]()
+    assert isinstance(green, d.Baseline)
+    assert green.red_stage is None
+
+
+@pytest.mark.parametrize(
+    ("stages", "runs", "fragment"),
+    [
+        ([], True, "at least 1"),
+        ([_stage(d.VerifyStage.BUILD)], True, "starts with the install stage"),
+        ([_stage(d.VerifyStage.INSTALL), _stage(d.VerifyStage.TESTS)], True, "pre-test stages"),
+        (
+            [
+                _stage(d.VerifyStage.INSTALL),
+                _stage(d.VerifyStage.TYPECHECK),
+                _stage(d.VerifyStage.BUILD),
+            ],
+            True,
+            "pipeline order",
+        ),
+        (
+            [_stage(d.VerifyStage.INSTALL, passed=False), _stage(d.VerifyStage.BUILD)],
+            False,
+            "stops at the first failing stage",
+        ),
+        ([_stage(d.VerifyStage.INSTALL, passed=False)], True, "no test results"),
+        ([_stage(d.VerifyStage.INSTALL)], False, "has its test runs"),
+    ],
+)
+def test_baseline_stage_rules(stages: list[d.VerifyStageResult], runs: bool, fragment: str) -> None:
+    with pytest.raises(ValidationError, match=fragment):
+        d.Baseline(
+            run_id=RUN,
+            stages=stages,
+            runs=[_tests()] if runs else [],
+            passing_ids=frozenset(),
+            flaky_ids=frozenset(),
+            test_file_hashes={},
+            test_count=0,
+        )
+
+
+# ---------------------------------------------------------------- P1-12d gate review
+
+
+def _step(i: int, **over: Any) -> d.Step:
+    base: dict[str, Any] = {
+        "id": StepId(f"s{i}"),
+        "order": i,
+        "type": StepType.EDIT_CLUSTER,
+        "description": "d",
+        "rationale": "r",
+    }
+    return d.Step(**{**base, **over})
+
+
+def test_a_step_justifies_h8_flags_and_the_plan_unions_them() -> None:
+    """Review B2: H8 justifications live in the plan a human approves (FR-8, A11)."""
+    s1 = _step(1, flag_justifications={"--legacy-peer-deps": "react-dom 17 peer pin"})
+    s2 = _step(2, flag_justifications={"--legacy-peer-deps": "enzyme adapter", "--force": "x"})
+    plan = d.Plan(id=PlanId("p"), run_id=RUN, steps=[s2, s1])
+    assert plan.flag_justifications == {
+        "--legacy-peer-deps": "react-dom 17 peer pin / enzyme adapter",
+        "--force": "x",
+    }
+    with pytest.raises(ValidationError, match="not H8 flags"):
+        _step(3, flag_justifications={"--ignore-scripts": "why"})
+    with pytest.raises(ValidationError, match="cannot be empty"):
+        _step(3, flag_justifications={"--force": "  "})
+
+
+def _st(stage: d.VerifyStage, passed: bool = True) -> d.VerifyStageResult:
+    return d.VerifyStageResult(stage=stage, passed=passed)
+
+
+@pytest.mark.parametrize(
+    ("stages", "with_tests", "fragment"),
+    [
+        ([_st(d.VerifyStage.BUILD), _st(d.VerifyStage.INSTALL)], False, "pipeline order"),
+        ([_st(d.VerifyStage.BUILD), _st(d.VerifyStage.BUILD)], False, "pipeline order"),
+        (
+            [_st(d.VerifyStage.BUILD, passed=False), _st(d.VerifyStage.TESTS)],
+            True,
+            "first failing stage",
+        ),
+        ([_st(d.VerifyStage.BUILD, passed=False)], True, "reached the tests stage"),
+        ([_st(d.VerifyStage.TESTS)], False, "reached the tests stage"),
+    ],
+)
+def test_verify_result_rules(
+    stages: list[d.VerifyStageResult], with_tests: bool, fragment: str
+) -> None:
+    """Review B1: one pipeline, in order, stopping at the first failure; tests only if reached."""
+    with pytest.raises(ValidationError, match=fragment):
+        d.VerifyResult(stages=stages, tests=_tests() if with_tests else None)
+
+
+def test_a_red_verify_result_names_its_stage() -> None:
+    red = d.VerifyResult(stages=[_st(d.VerifyStage.INSTALL), _st(d.VerifyStage.TYPECHECK, False)])
+    assert red.red_stage is d.VerifyStage.TYPECHECK
+    assert d.VerifyResult(stages=[_st(d.VerifyStage.TESTS)], tests=_tests()).red_stage is None

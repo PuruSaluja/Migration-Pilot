@@ -533,3 +533,52 @@ def test_each_call_gets_its_own_ids() -> None:
     first = run(runtime.call(req(context=ctx(role_call_id=LLMCallId("llm-1"))), h, guard()))
     second = run(runtime.call(req(context=ctx(role_call_id=LLMCallId("llm-2"))), h, guard()))
     assert (first.call_id, second.call_id) == ("llm-1", "llm-2")  # type: ignore[attr-defined]
+
+
+# ---------------------------------------------------------------- cassette v1 additions (S3)
+
+
+def test_a_turn_without_usage_charges_the_guard_none_and_total_usage_is_reported() -> None:
+    """S3 (P1-12d): a runtime that can't report per-turn usage, and the call's final usage."""
+    g = guard()
+    script = ScriptedCall(
+        turns=(
+            ScriptedTurn(tool_calls=(tool("view_file", path="a"),), usage=None),
+            ScriptedTurn(final=ANSWER, usage=None),
+        ),
+        total_usage=Usage(input_tokens=40, output_tokens=9),
+    )
+    result, _, _ = call_once(script, guard_=g)
+    assert g.charged == [None, None]  # the guard used its pessimistic estimate
+    assert result.usage == Usage(input_tokens=40, output_tokens=9)
+    assert result.stop is StopReason.COMPLETED
+
+
+def test_a_turn_without_usage_needs_total_usage() -> None:
+    """Otherwise the call would report zero tokens for a turn that ran (H7)."""
+    with pytest.raises(ValueError, match="needs total_usage"):
+        ScriptedCall(
+            turns=(
+                ScriptedTurn(tool_calls=(tool("view_file", path="a"),), usage=Usage(3, 1)),
+                ScriptedTurn(final=ANSWER, usage=None),
+            ),
+        )
+    summed = ScriptedCall(
+        turns=(
+            ScriptedTurn(tool_calls=(tool("view_file", path="a"),), usage=Usage(3, 1)),
+            ScriptedTurn(final=ANSWER, usage=Usage(2, 2)),
+        )
+    )
+    result, _, _ = call_once(summed)
+    assert result.usage == Usage(5, 3)
+
+
+@pytest.mark.parametrize("raw", ["not json at all", "[1, 2]", '{"answer": "x"}'])
+def test_a_raw_text_answer_that_is_not_a_valid_object_is_schema_invalid(raw: str) -> None:
+    result, _, _ = call_once(ScriptedCall.answer(raw))
+    assert (result.stop, result.output) == (StopReason.SCHEMA_INVALID, None)
+
+
+def test_a_raw_text_answer_that_parses_to_a_valid_object_completes() -> None:
+    result, _, _ = call_once(ScriptedCall.answer('{"answer": "done", "confidence": 0.9}'))
+    assert (result.stop, result.output) == (StopReason.COMPLETED, ANSWER)

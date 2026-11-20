@@ -26,7 +26,15 @@ from pydantic import (
 )
 
 from mpilot.core.types import FailureCategory, RunId
-from mpilot.models.domain import Ecosystem, NonNegInt, Percent, TestResult, TestStage, VerifyResult
+from mpilot.models.domain import (
+    Ecosystem,
+    NonNegInt,
+    Percent,
+    TestResult,
+    TestStage,
+    VerifyResult,
+    VerifyStage,
+)
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _GIT_SHA = re.compile(r"^[0-9a-f]{40}([0-9a-f]{24})?$")
@@ -195,12 +203,13 @@ class FinalVerification(ArtifactModel):
     """The whole pipeline run in a fresh sandbox built from `mirror_commit` (§9.5).
 
     Success, L0-L2 and every gate check judge only this record. `coverage_pct` comes from one
-    extra instrumented run of the same commit, so `tests` is uninstrumented, as at baseline.
+    extra instrumented run of the same commit, so the test run is uninstrumented, as at
+    baseline. The test run lives in `verify.tests` only (one copy, `tests` reads it); a final
+    run that went red before the tests has none, and the gate fails it (`final_red`).
     """
 
     mirror_commit: str
-    verify: VerifyResult  # install -> build -> typecheck -> full suite
-    tests: TestResult  # stage == final; parsed from JUnit
+    verify: VerifyResult  # install -> build -> typecheck -> full suite; tests: stage == final
     runner_exit_code: int | None  # exit code of the test command
     runner_summary: TestCounts | None  # parsed from the runner log; None if it printed none
     resolved_versions: dict[str, str] = Field(default_factory=dict)  # package -> version
@@ -212,9 +221,17 @@ class FinalVerification(ArtifactModel):
     def _commit(cls, v: str) -> str:
         return _check_git_sha(v)
 
+    @property
+    def tests(self) -> TestResult | None:
+        """The final test run, parsed from JUnit; None if a stage before the tests failed."""
+        return self.verify.tests
+
     @model_validator(mode="after")
     def _check(self) -> Self:
-        if self.tests.stage is not TestStage.FINAL:
+        stages = self.verify.stages
+        if not stages or stages[0].stage is not VerifyStage.INSTALL:
+            raise ValueError("final verification runs the whole pipeline, from install")
+        if self.verify.tests is not None and self.verify.tests.stage is not TestStage.FINAL:
             raise ValueError("final verification judges a test run with stage == final")
         return self
 

@@ -5,9 +5,10 @@ Critic verdicts, the resume fields of tool and role calls, and the driver lease 
 control tables).
 
 Generated with Alembic autogenerate from `mpilot.models.tables`, then frozen: it imports no
-application code, so later changes to `tables.py` never alter what this revision does. From
-the Phase 1 gate on, changes are new revisions. A test compares the migrated schema with
-`tables.py`.
+application code, so later changes to `tables.py` never alter what this revision does.
+**Frozen at the Phase 1 gate (P1-12d, 2026-11-20): never edit this file again.** Every schema
+change from here on is a new revision. A test pins this file's SHA-256, and another compares
+the migrated schema with `tables.py`.
 
 Revision ID: 0001
 Revises:
@@ -378,7 +379,7 @@ def upgrade() -> None:
         sa.Column("seq", sa.Integer(), autoincrement=True, nullable=False),
         sa.Column("recorded_at", sa.DateTime(timezone=True), nullable=False),
         sa.CheckConstraint(
-            "stage IN ('baseline', 'targeted', 'full', 'final')",
+            "stage IN ('baseline', 'targeted', 'full', 'final', 'rerun')",
             name=op.f("ck_test_results_stage_known"),
         ),
         sa.CheckConstraint(
