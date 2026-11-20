@@ -132,6 +132,8 @@ class Checkpoint(StateModel):
     latest_snapshot_ref: str | None = None
     export_dir: str | None = None  # set when paused: where the workspace export lives
     export_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    #: Why the run ended (set only in a terminal state); copied to `Run.terminal_reason`.
+    terminal_reason: str | None = None
     integrity_failures: NonNegInt = 0  # §7.4: one failure -> REPAIR_LOOP, a second -> ESCALATED
     critic_revisions: NonNegInt = 0  # FR-15: at most one revise loop
 
@@ -176,6 +178,8 @@ class Checkpoint(StateModel):
             raise ValueError("the in-flight call cannot also be completed")
         if self.critic_revisions > 1:
             raise ValueError("at most one Critic revise loop (FR-15)")
+        if self.terminal_reason is not None and not self.status.is_terminal:
+            raise ValueError("terminal_reason is set only in a terminal state")
         signatures = [e.signature for e in self.failure_history]
         if len(signatures) != len(set(signatures)):
             raise ValueError("failure_history has one entry per signature")
@@ -208,6 +212,8 @@ class Checkpoint(StateModel):
             problems.append("checkpoints of different runs")
         if self.seq <= previous.seq:
             problems.append(f"seq {self.seq} does not follow {previous.seq}")
+        if previous.status.is_terminal:
+            problems.append(f"the run already ended in {previous.status}")
         for scope, old in previous.sticky.items():
             new = self.sticky.get(scope)
             if new is None or not new.covers(old):

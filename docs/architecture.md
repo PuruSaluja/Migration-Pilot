@@ -539,10 +539,17 @@ class TransitionTable(Protocol):                     # pure §7.4 table (P3-04)
 
 class Orchestrator(Protocol):
     async def start(self, req: RunRequest) -> RunId: ...
-    async def drive(self, run_id: RunId) -> RunStatus: ...     # until terminal, PAUSED_LIMIT or AWAITING_APPROVAL
-    async def resume(self, run_id: RunId) -> RunStatus: ...    # B5 semantics
+    async def drive(self, run_id: RunId) -> RunStatus: ...     # takes the lease; until terminal, PAUSED_LIMIT
+                                                               # or AWAITING_APPROVAL; CancelRequestedError at a
+                                                               # checkpoint -> teardown -> END_CANCELLED
+    async def resume(self, run_id: RunId) -> RunStatus: ...    # B5 semantics; lease first, then control:
+                                                               # a recorded cancel ends it END_CANCELLED
     async def decide_plan(self, run_id: RunId, *, approve: bool, reason: str | None) -> None: ...
+        # records the CP-1 decision; a live waiting driver applies it, else this process takes the
+        # lease and applies it (approve -> drive, reject -> END_REJECTED)
     async def cancel(self, run_id: RunId) -> None: ...
+        # records the request (durable); no-op if ended; no live driver -> take the lease, reap,
+        # END_CANCELLED; a live one -> wait until the run ends or its lease expires, then take over
 
 class CallEstimate(BaseModel, frozen=True):          # B2: turn k costs prompt + (k-1)*tool + output
     prompt_tokens: int; tool_output_per_turn: int; output_ceiling: int; requested_turns: int
@@ -567,16 +574,55 @@ class MigrationNote(ArtifactModel): run_id: RunId; key: str; text: str          
 class EscalationReport(ArtifactModel):                                           # FR-17, one per run
     run_id: RunId; category: FailureCategory; report_md: str; data: dict[str, Any]; created_at: datetime
 
-class RunStore(Protocol):                            # SQLite WAL (P1-10)
-    def create_run(self, run: Run) -> None: ...; def save_run(self, run: Run) -> None: ...
+class RunStore(Protocol):                            # SQLite WAL (P1-10); every write of run state is fenced
+    def create_run(self, run: Run) -> None: ...
+    def save_run(self, run: Run, *, lease: Lease) -> None: ...      # may not change CHECKPOINT_OWNED fields
     def get_run(self, run_id: RunId) -> Run: ...; def list_runs(self) -> Sequence[Run]: ...
-    def append(self, row: AppendRow) -> None: ...; def put(self, row: SingleRow) -> None: ...
+    # coordination (P1-12c): LeaseLostError for a write whose lease is not the current one
+    def acquire_lease(self, run_id: RunId, holder: str, *, ttl_s: float) -> Lease: ...   # LeaseHeldError for
+                                                                    # any live lease (names are labels), RunEndedError; atomic
+    def renew_lease(self, lease: Lease, *, ttl_s: float) -> Renewal: ...   # + the run's RunControl: the heartbeat
+                                                                    # is how a cancel reaches a non-checkpointing driver
+    def release_lease(self, lease: Lease) -> None: ...              # no-op if no longer current
+    def current_lease(self, run_id: RunId) -> Lease | None: ...
+    def control(self, run_id: RunId) -> RunControl: ...
+    def request_cancel(self, run_id: RunId, *, reason: str | None = None) -> RunControl: ...   # no lease;
+                                                                    # first request kept; no-op once ended
+    def request_plan_decision(self, run_id: RunId, *, approve: bool, reason: str | None = None) -> RunControl: ...
+                                                                    # only in AWAITING_APPROVAL, only once
+    def append(self, row: AppendRow, *, lease: Lease) -> None: ...
+    def put(self, row: SingleRow, *, lease: Lease) -> None: ...     # a Plan's approved must match plan_problem
     def rows(self, run_id: RunId, kind: type[RowT]) -> Sequence[RowT]: ...
-    def append_final_verification(self, run_id: RunId, result: FinalVerification) -> None: ...   # has no run_id itself
+    def append_final_verification(self, run_id: RunId, result: FinalVerification, *, lease: Lease) -> None: ...
     def final_verifications(self, run_id: RunId) -> Sequence[FinalVerification]: ...             # oldest first
-    def checkpoint(self, cp: Checkpoint) -> None: ...          # StoreError if cp.covers(previous) fails; check + write atomic
+    def checkpoint(self, cp: Checkpoint, *, lease: Lease, rows: Sequence[AppendRow] = ()) -> None: ...
+        # one atomic step: fence -> a recorded cancel refuses all but END_CANCELLED (CancelRequestedError,
+        # nothing written) -> covers + transition_problems (StoreError) -> rows + checkpoint + the run's
+        # status/paused/spent/terminal_reason -> a terminal checkpoint releases the lease
     def latest_checkpoint(self, run_id: RunId) -> Checkpoint | None: ...
     def add_eval(self, result: EvalResult) -> None: ...; def evals(self, suite: str) -> Sequence[EvalResult]: ...
+
+# models/coordination.py (P1-12c): pure rules both stores apply
+class PlanDecision(StrEnum): APPROVE; REJECT
+class Lease(BaseModel, frozen=True):                 # one per run, updated in place, never deleted
+    run_id: RunId; holder: str; token: int           # fencing token: +1 with every new holder
+    acquired_at: datetime; expires_at: datetime; released_at: datetime | None
+    def live(self, now: datetime) -> bool: ...       # not released and not expired
+class RunControl(BaseModel, frozen=True):            # requests from other processes, each made once
+    run_id: RunId; cancel_requested_at: datetime | None; cancel_reason: str | None
+    plan_decision: PlanDecision | None; plan_reason: str | None; plan_decided_at: datetime | None
+    cancel_requested -> bool
+def take_lease(current: Lease | None, run_id: RunId, holder: str, *, now: datetime, ttl_s: float) -> Lease: ...
+def check_fence(current: Lease | None, lease: Lease, run_id: RunId) -> Lease: ...   # expiry alone never refuses
+def renew(current: Lease | None, lease: Lease, *, now: datetime, ttl_s: float) -> Lease: ...
+def transition_problems(new_state: RunStatus, previous: RunStatus, control: RunControl) -> list[str]: ...
+    # effective states (a paused run's paused_at_state): END_CANCELLED needs a cancel request,
+    # END_REJECTED a reject; from AWAITING_APPROVAL only waiting, END_ERROR, END_BUDGET_EXCEEDED and
+    # those two go without an approve
+def plan_problem(plan_approved: bool | None, control: RunControl) -> str | None: ...   # Plan.approved = recorded decision
+class Renewal(BaseModel, frozen=True): lease: Lease; control: RunControl
+def run_following(run: Run, cp: Checkpoint) -> Run: ...   # CHECKPOINT_OWNED = status, paused_at_state,
+                                                          # spent, terminal_reason, taken from cp
 
 class EventKind(StrEnum): STATE_CHANGED; ROUTING_DECISION; LLM_CALL; TOOL_CALL; VERIFY; CHECKPOINT; APPROVAL_REQUESTED; LOG
 class RunEventRecord(BaseModel, frozen=True): run_id: RunId; seq: int; at: datetime; kind: EventKind; data: dict
@@ -604,6 +650,7 @@ class Checkpoint(BaseModel, frozen=True):            # after every tool call (NF
     in_flight: InFlightCall | None
     latest_snapshot_ref: str | None
     export_dir: str | None; export_digest: str | None   # both required when paused
+    terminal_reason: str | None                      # only in a terminal state; copied to Run
     integrity_failures: int; critic_revisions: int   # §7.4 "once"; FR-15 at most one revise
     unit_key -> (RunStatus, StepId | None, int | None, int)   # (paused_at_state or status, step, attempt_n, epoch)
     scope -> str                                     # sticky_scope of the unit, never phase/PAUSED_LIMIT
@@ -632,6 +679,28 @@ def resume_point(cp: Checkpoint, calls: Sequence[LLMCall], tool_calls: Sequence[
 def latest_output(calls: Sequence[LLMCall], role: Role) -> dict[str, Any] | None: ...
     # last COMPLETED top-level call's output: the AnalysisReport's home for the Planner (§8.2)
 ```
+
+**Coordination (P1-12c).** One driver per run: whatever drives a run (`mpilot run`, `resume`,
+`approve`, `cancel` with no live driver, the API) first takes the run's lease, keeps that one
+lease, and renews it at least once every ttl/3 from a heartbeat that also runs during long tool
+calls and while waiting for approval (SPEC §10.1: 60 s, every 20 s; P3-05 makes it a setting). A
+live lease is never handed out again, not even to the same holder name. Every write of the
+run's state carries the lease, and the store checks it in the write's own transaction, so a driver
+that stalled past its lease and was taken over can write nothing, ever. `mpilot cancel` and
+`mpilot approve` record a request (`RunControl`) without a lease: a live driver meets a cancel at
+its next checkpoint (`CancelRequestedError`, nothing written) or heartbeat (`Renewal.control`),
+stops any running tool call and ends END_CANCELLED; it sees a plan decision the same way while it
+waits. With no live driver the requester takes the lease and applies the request itself; the CLI
+waits for a live driver to finish, the REST API answers 202. A cancel recorded before the final
+checkpoint wins even after the PR was opened (the PR stays a draft). The
+store refuses END_CANCELLED without a request, END_REJECTED without a reject, leaving
+AWAITING_APPROVAL (a pause counts as the state it pauses in) for anything but END_ERROR or
+END_BUDGET_EXCEEDED without an approval, a `Plan.approved` that disagrees with the recorded
+decision (CP-1 is a human decision), and anything after a terminal checkpoint. The checkpoint is authoritative: it sets the run's status, paused state, spent and
+terminal reason in the same transaction, and `save_run` may not change them. A role call's row
+should go in the same `checkpoint(..., rows=[row])` call as the checkpoint that folds it in;
+`resume_point`'s reconciliation stays as the backstop for rows written on their own (the ToolHost's
+tool rows).
 
 **Resume protocol (FR-21, P1-12b).** For each role call: a checkpoint naming it `in_flight`
 before the runtime is invoked; when it ends, its `LLMCall` row (finished: `stop` set; or
@@ -668,6 +737,7 @@ their parent's `doc`.
 | `test_results`, `final_verifications`, `integrity_reports`, `critic_verdicts` | `TestResult`, `FinalVerification`, `IntegrityReport`, `CriticVerdict` (the last three with a `mirror_commit` column: the commit judged) | append-only |
 | `migration_notes` | `MigrationNote`, one row per `write_note` call; the current note for a key is its highest `seq` | append-only |
 | `eval_results` | `EvalResult` (bench rows, no run FK) | append-only |
+| `run_leases`, `run_controls` | `Lease`, `RunControl` (P1-12c; every field a column, no `doc`) | one per run, updated in place; a lease row is never deleted, so its token only rises |
 
 Append-only tables have `seq` (insertion order) and `recorded_at` (the store's `Clock`, UTC). Child
 tables cascade from `runs`. NFR-12 is repeated as CHECK constraints (tier opus/sonnet, effort

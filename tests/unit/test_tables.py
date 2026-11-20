@@ -19,7 +19,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.schema import CreateIndex, CreateTable
 from test_domain_models import NOW, RUN, SAMPLES, SHA, SPEC
 
-from mpilot.models import artifacts, state, tables
+from mpilot.models import artifacts, coordination, state, tables
 from mpilot.models import domain as d
 from mpilot.models.migrate import enable_sqlite_fks, upgrade
 from mpilot.models.tables import (
@@ -225,6 +225,8 @@ MODELS: dict[str, type] = {
     "EvalResult": d.EvalResult,
     "MigrationNote": artifacts.MigrationNote,
     "EscalationReport": artifacts.EscalationReport,
+    "Lease": coordination.Lease,
+    "RunControl": coordination.RunControl,
 }
 #: Columns that are not copied from a field of the model.
 BOOKKEEPING = {"seq", "recorded_at", "doc"}

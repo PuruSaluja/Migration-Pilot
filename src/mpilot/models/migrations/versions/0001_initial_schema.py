@@ -1,7 +1,8 @@
 """Initial schema: a table for every SPEC §12 model, plus checkpoints, final verification,
 migration notes and the escalation report (P1-09; amended at the P1-12 gate, before any
 database existed outside tests: attempt numbering, commit-bound integrity reports and
-Critic verdicts, and the resume fields of tool and role calls).
+Critic verdicts, the resume fields of tool and role calls, and the driver lease and run
+control tables).
 
 Generated with Alembic autogenerate from `mpilot.models.tables`, then frozen: it imports no
 application code, so later changes to `tables.py` never alter what this revision does. From
@@ -142,6 +143,48 @@ def upgrade() -> None:
             ["run_id"], ["runs.id"], name=op.f("fk_checkpoints_run_id_runs"), ondelete="CASCADE"
         ),
         sa.PrimaryKeyConstraint("run_id", "seq", name=op.f("pk_checkpoints")),
+    )
+    op.create_table(
+        "run_leases",
+        sa.Column("run_id", sa.String(), nullable=False),
+        sa.Column("holder", sa.String(), nullable=False),
+        sa.Column("token", sa.Integer(), nullable=False),
+        sa.Column("acquired_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("expires_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("released_at", sa.DateTime(timezone=True), nullable=True),
+        sa.CheckConstraint(
+            "expires_at > acquired_at", name=op.f("ck_run_leases_expires_after_acquired")
+        ),
+        sa.CheckConstraint("token > 0", name=op.f("ck_run_leases_token_positive")),
+        sa.ForeignKeyConstraint(
+            ["run_id"], ["runs.id"], name=op.f("fk_run_leases_run_id_runs"), ondelete="CASCADE"
+        ),
+        sa.PrimaryKeyConstraint("run_id", name=op.f("pk_run_leases")),
+    )
+    op.create_table(
+        "run_controls",
+        sa.Column("run_id", sa.String(), nullable=False),
+        sa.Column("cancel_requested_at", sa.DateTime(timezone=True), nullable=True),
+        sa.Column("cancel_reason", sa.Text(), nullable=True),
+        sa.Column("plan_decision", sa.String(), nullable=True),
+        sa.Column("plan_reason", sa.Text(), nullable=True),
+        sa.Column("plan_decided_at", sa.DateTime(timezone=True), nullable=True),
+        sa.CheckConstraint(
+            "(plan_decision IS NULL) = (plan_decided_at IS NULL)",
+            name=op.f("ck_run_controls_plan_decided_together"),
+        ),
+        sa.CheckConstraint(
+            "cancel_reason IS NULL OR cancel_requested_at IS NOT NULL",
+            name=op.f("ck_run_controls_reason_needs_request"),
+        ),
+        sa.CheckConstraint(
+            "plan_decision IS NULL OR plan_decision IN ('approve', 'reject')",
+            name=op.f("ck_run_controls_plan_decision_known"),
+        ),
+        sa.ForeignKeyConstraint(
+            ["run_id"], ["runs.id"], name=op.f("fk_run_controls_run_id_runs"), ondelete="CASCADE"
+        ),
+        sa.PrimaryKeyConstraint("run_id", name=op.f("pk_run_controls")),
     )
     op.create_table(
         "critic_verdicts",
@@ -498,6 +541,8 @@ def downgrade() -> None:
         batch_op.drop_index("ix_critic_verdicts_run_id_seq")
 
     op.drop_table("critic_verdicts")
+    op.drop_table("run_controls")
+    op.drop_table("run_leases")
     op.drop_table("checkpoints")
     op.drop_table("baselines")
     with op.batch_alter_table("attempts", schema=None) as batch_op:

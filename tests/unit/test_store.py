@@ -34,6 +34,7 @@ from mpilot.core.types import (
 )
 from mpilot.models import artifacts as art
 from mpilot.models import domain as d
+from mpilot.models.coordination import Lease, run_following
 from mpilot.models.migrate import head_revision
 from mpilot.models.state import BudgetState, Checkpoint, FailureHistoryEntry, InFlightCall
 from mpilot.models.store import SqliteRunStore, sqlite_engine
@@ -57,6 +58,16 @@ def sample[M: d.DomainModel](model: type[M], **update: Any) -> M:
     made = SAMPLES[model]()
     assert isinstance(made, model)
     return made.model_copy(update=update) if update else made
+
+
+def lease_for(store: Any, run_id: RunId = RUN) -> Lease:
+    """The test's one driver lease on `run_id`: taken on first use, then reused (a store
+    never hands out a live lease twice)."""
+    current: Lease | None = store.current_lease(run_id)
+    if current is not None and current.holder == "test-driver" and current.released_at is None:
+        return current
+    lease: Lease = store.acquire_lease(run_id, "test-driver", ttl_s=3600)
+    return lease
 
 
 def run(**update: Any) -> d.Run:
@@ -183,13 +194,13 @@ def test_run_lifecycle(store: RunStore) -> None:
     with pytest.raises(KeyError):
         store.get_run(RUN)
     with pytest.raises(KeyError):
-        store.save_run(run())
+        store.save_run(run(), lease=lease_for(store))
     store.create_run(run())
     assert store.get_run(RUN) == run()
     with pytest.raises(StoreError, match=r"exist|UNIQUE|PRIMARY"):
         store.create_run(run())
-    updated = run(status=RunStatus.INTEGRITY_CHECK, terminal_reason=None)
-    store.save_run(updated)
+    updated = run(branch="mpilot/react-18-1", base_sha="c" * 40)
+    store.save_run(updated, lease=lease_for(store))
     assert store.get_run(RUN) == updated
 
 
@@ -214,7 +225,7 @@ def test_every_appended_record_type_comes_back_equal(store: RunStore) -> None:
         note(),
     ]
     for record in records:
-        store.append(record)
+        store.append(record, lease=lease_for(store))
     for record in records:
         assert store.rows(RUN, type(record)) == [record], type(record).__name__
 
@@ -223,11 +234,11 @@ def test_appended_rows_keep_insertion_order(store: RunStore) -> None:
     store.create_run(run())
     results = [sample(d.TestResult, passed=n) for n in (5, 1, 3)]
     for result in results:
-        store.append(result)
+        store.append(result, lease=lease_for(store))
     assert store.rows(RUN, d.TestResult) == results
     calls = [tool_call(f"tc-{n}") for n in (3, 1, 2)]
     for call in calls:
-        store.append(call)
+        store.append(call, lease=lease_for(store))
     assert store.rows(RUN, d.ToolCall) == calls
 
 
@@ -240,16 +251,16 @@ def test_single_records_are_replaced_not_duplicated(store: RunStore) -> None:
         escalation(),
     ]
     for record in first:
-        store.put(record)
+        store.put(record, lease=lease_for(store))
         assert store.rows(RUN, type(record)) == [record]
     second: list[Any] = [
         sample(d.Baseline, test_count=99),
-        sample(d.Plan, approved=True),
+        sample(d.Plan, approved=None, risks=["peer deps"]),  # approved needs CP-1 (P1-12c)
         sample(d.PullRequest, number=2, url="https://github.com/o/r/pull/2"),
         escalation(category=FailureCategory.BUDGET_EXHAUSTED, report_md="# again"),
     ]
     for record in second:
-        store.put(record)
+        store.put(record, lease=lease_for(store))
         assert store.rows(RUN, type(record)) == [record]
 
 
@@ -266,8 +277,8 @@ def test_rows_are_per_run(store: RunStore) -> None:
     other = RunId("run-other")
     store.create_run(run())
     store.create_run(run(id=other))
-    store.append(sample(d.TestResult))
-    store.append(sample(d.TestResult, run_id=other, passed=7))
+    store.append(sample(d.TestResult), lease=lease_for(store))
+    store.append(sample(d.TestResult, run_id=other, passed=7), lease=lease_for(store, other))
     assert [r.passed for r in store.rows(other, d.TestResult)] == [7]
     assert len(store.rows(RUN, d.TestResult)) == 1
 
@@ -280,24 +291,24 @@ def test_every_write_to_a_note_key_is_kept(store: RunStore) -> None:
         note("convention", "spaces"),
     ]
     for n in notes:
-        store.append(n)
+        store.append(n, lease=lease_for(store))
     assert store.rows(RUN, art.MigrationNote) == notes
 
 
 def test_final_verifications_are_kept_oldest_first(store: RunStore) -> None:
     store.create_run(run())
     first, second = final_verification("a" * 40), final_verification("b" * 40, coverage_pct=None)
-    store.append_final_verification(RUN, first)
-    store.append_final_verification(RUN, second)
+    store.append_final_verification(RUN, first, lease=lease_for(store))
+    store.append_final_verification(RUN, second, lease=lease_for(store))
     assert store.final_verifications(RUN) == [first, second]
 
 
 def test_checkpoints_move_forward_only(store: RunStore) -> None:
     store.create_run(run())
-    store.checkpoint(checkpoint(5))
+    store.checkpoint(checkpoint(5), lease=lease_for(store))
     assert store.latest_checkpoint(RUN) == checkpoint(5)
     forward = checkpoint(6)
-    store.checkpoint(forward)
+    store.checkpoint(forward, lease=lease_for(store))
     assert store.latest_checkpoint(RUN) == forward
 
 
@@ -320,11 +331,11 @@ def test_a_checkpoint_that_undoes_anything_is_refused_and_changes_nothing(
     store: RunStore, change: dict[str, Any], fragment: str
 ) -> None:
     store.create_run(run())
-    store.checkpoint(checkpoint(6))
+    store.checkpoint(checkpoint(6), lease=lease_for(store))
     with pytest.raises(StoreError, match=fragment):
-        store.checkpoint(checkpoint(7).model_copy(update=change))
+        store.checkpoint(checkpoint(7).model_copy(update=change), lease=lease_for(store))
     assert store.latest_checkpoint(RUN) == checkpoint(6)
-    store.checkpoint(checkpoint(7))  # the refusal did not use up seq 7
+    store.checkpoint(checkpoint(7), lease=lease_for(store))  # the refusal did not use up seq 7
 
 
 def test_evals_are_listed_by_suite_in_order(store: RunStore) -> None:
@@ -407,28 +418,28 @@ def test_everything_survives_closing_and_reopening(tmp_path: Path, clock: FakeCl
     path = tmp_path / "mpilot.db"
     first = SqliteRunStore.open(path, clock)
     first.create_run(run())
-    first.append(sample(d.RoutingDecision))
-    first.append(sample(d.LLMCall))
-    first.put(sample(d.Plan))
-    first.checkpoint(checkpoint(1))
-    first.checkpoint(checkpoint(2))
-    first.append_final_verification(RUN, final_verification())
-    first.put(escalation())
-    first.append(note())
+    first.append(sample(d.RoutingDecision), lease=lease_for(first))
+    first.append(sample(d.LLMCall), lease=lease_for(first))
+    first.put(sample(d.Plan, approved=None), lease=lease_for(first))
+    first.checkpoint(checkpoint(1), lease=lease_for(first))
+    first.checkpoint(checkpoint(2), lease=lease_for(first))
+    first.append_final_verification(RUN, final_verification(), lease=lease_for(first))
+    first.put(escalation(), lease=lease_for(first))
+    first.append(note(), lease=lease_for(first))
     first.close()
 
     again = SqliteRunStore.open(path, clock)
     try:
-        assert again.get_run(RUN) == run()
+        assert again.get_run(RUN) == run_following(run(), checkpoint(2))
         assert again.rows(RUN, d.LLMCall) == [sample(d.LLMCall)]
-        assert again.rows(RUN, d.Plan) == [sample(d.Plan)]
+        assert again.rows(RUN, d.Plan) == [sample(d.Plan, approved=None)]
         assert again.latest_checkpoint(RUN) == checkpoint(2)
         assert again.final_verifications(RUN) == [final_verification()]
         assert again.rows(RUN, art.EscalationReport) == [escalation()]
         assert again.rows(RUN, art.MigrationNote) == [note()]
         # A resume must not be able to undo what was checkpointed before the restart (B5).
         with pytest.raises(StoreError, match="sticky"):
-            again.checkpoint(checkpoint(3, sticky={}))
+            again.checkpoint(checkpoint(3, sticky={}), lease=lease_for(again))
     finally:
         again.close()
 
@@ -437,14 +448,19 @@ def test_everything_survives_closing_and_reopening(tmp_path: Path, clock: FakeCl
 
 
 def test_rows_for_a_run_that_does_not_exist_are_refused(sqlite_store: SqliteRunStore) -> None:
+    made_up = Lease(
+        run_id=RUN, holder="x", token=1, acquired_at=NOW, expires_at=NOW + timedelta(hours=1)
+    )
+    with pytest.raises(KeyError):
+        lease_for(sqlite_store)
     with pytest.raises(StoreError):
-        sqlite_store.append(tool_call("tc-1"))
+        sqlite_store.append(tool_call("tc-1"), lease=made_up)
     with pytest.raises(StoreError):
-        sqlite_store.put(sample(d.Plan))
+        sqlite_store.put(sample(d.Plan), lease=made_up)
     with pytest.raises(StoreError):
-        sqlite_store.checkpoint(checkpoint(1))
+        sqlite_store.checkpoint(checkpoint(1), lease=made_up)
     with pytest.raises(StoreError):
-        sqlite_store.append_final_verification(RUN, final_verification())
+        sqlite_store.append_final_verification(RUN, final_verification(), lease=made_up)
 
 
 def test_an_llm_call_needs_its_routing_decision_stored_first(
@@ -452,25 +468,25 @@ def test_an_llm_call_needs_its_routing_decision_stored_first(
 ) -> None:
     sqlite_store.create_run(run())
     with pytest.raises(StoreError):
-        sqlite_store.append(sample(d.LLMCall))
+        sqlite_store.append(sample(d.LLMCall), lease=lease_for(sqlite_store))
     assert sqlite_store.rows(RUN, d.LLMCall) == []
-    sqlite_store.append(sample(d.RoutingDecision))
-    sqlite_store.append(sample(d.LLMCall))
+    sqlite_store.append(sample(d.RoutingDecision), lease=lease_for(sqlite_store))
+    sqlite_store.append(sample(d.LLMCall), lease=lease_for(sqlite_store))
 
 
 def test_duplicate_ids_are_refused_and_leave_no_partial_row(sqlite_store: SqliteRunStore) -> None:
     sqlite_store.create_run(run())
-    sqlite_store.append(tool_call("tc-1"))
+    sqlite_store.append(tool_call("tc-1"), lease=lease_for(sqlite_store))
     with pytest.raises(StoreError):
-        sqlite_store.append(tool_call("tc-1"))
+        sqlite_store.append(tool_call("tc-1"), lease=lease_for(sqlite_store))
     assert len(sqlite_store.rows(RUN, d.ToolCall)) == 1
 
 
 def test_a_checkpoint_for_a_used_sequence_number_is_refused(sqlite_store: SqliteRunStore) -> None:
     sqlite_store.create_run(run())
-    sqlite_store.checkpoint(checkpoint(1))
+    sqlite_store.checkpoint(checkpoint(1), lease=lease_for(sqlite_store))
     with pytest.raises(StoreError, match="does not follow"):
-        sqlite_store.checkpoint(checkpoint(1))
+        sqlite_store.checkpoint(checkpoint(1), lease=lease_for(sqlite_store))
 
 
 def test_asking_for_a_type_that_is_not_stored_is_a_programming_error(
@@ -484,8 +500,8 @@ def test_deleting_a_run_is_not_part_of_the_api_but_cascades_if_done(
     sqlite_store: SqliteRunStore,
 ) -> None:
     sqlite_store.create_run(run())
-    sqlite_store.append(tool_call("tc-1"))
-    sqlite_store.checkpoint(checkpoint(1))
+    sqlite_store.append(tool_call("tc-1"), lease=lease_for(sqlite_store))
+    sqlite_store.checkpoint(checkpoint(1), lease=lease_for(sqlite_store))
     with Session(sqlite_store.engine) as session, session.begin():
         session.connection().exec_driver_sql("DELETE FROM runs")
     assert sqlite_store.rows(RUN, d.ToolCall) == []
@@ -499,8 +515,16 @@ def test_save_run_updates_the_queryable_columns_as_well_as_the_document(
     sqlite_store: SqliteRunStore,
 ) -> None:
     sqlite_store.create_run(run())
-    sqlite_store.save_run(
-        run(status=RunStatus.END_ERROR, terminal_reason="boom", branch="mpilot/x-1")
+    sqlite_store.save_run(run(branch="mpilot/x-1"), lease=lease_for(sqlite_store))
+    sqlite_store.checkpoint(
+        checkpoint(
+            1,
+            status=RunStatus.END_ERROR,
+            terminal_reason="boom",
+            attempt_n=None,
+            attempt_id=None,
+        ),
+        lease=lease_for(sqlite_store),
     )
     with Session(sqlite_store.engine) as session:
         row = session.get_one(DbRun, RUN)
@@ -522,7 +546,7 @@ def test_an_attempts_signature_and_category_are_copied_from_its_diagnosis(
     attempt = sample(d.Attempt)
     assert attempt.diagnosis is not None
     sqlite_store.create_run(run())
-    sqlite_store.append(attempt)
+    sqlite_store.append(attempt, lease=lease_for(sqlite_store))
     sqlite_store.append(
         attempt.model_copy(
             update={
@@ -531,7 +555,8 @@ def test_an_attempts_signature_and_category_are_copied_from_its_diagnosis(
                 "n_in_step": attempt.n_in_step + 1,
                 "diagnosis": None,
             }
-        )
+        ),
+        lease=lease_for(sqlite_store),
     )
     with Session(sqlite_store.engine) as session:
         rows = list(session.scalars(select(DbAttempt).order_by(DbAttempt.seq)))
@@ -544,7 +569,7 @@ def test_an_attempts_signature_and_category_are_copied_from_its_diagnosis(
 
 def test_checkpoint_columns_match_the_checkpoint(sqlite_store: SqliteRunStore) -> None:
     sqlite_store.create_run(run())
-    sqlite_store.checkpoint(checkpoint(4))
+    sqlite_store.checkpoint(checkpoint(4), lease=lease_for(sqlite_store))
     sqlite_store.checkpoint(
         checkpoint(
             5,
@@ -552,7 +577,8 @@ def test_checkpoint_columns_match_the_checkpoint(sqlite_store: SqliteRunStore) -
             paused_at_state=RunStatus.REPAIR_LOOP,
             export_dir="/runs/x/export",
             export_digest="d" * 64,
-        )
+        ),
+        lease=lease_for(sqlite_store),
     )
     with Session(sqlite_store.engine) as session:
         row = session.get_one(DbCheckpoint, (RUN, 5))
@@ -567,7 +593,7 @@ def test_checkpoint_columns_match_the_checkpoint(sqlite_store: SqliteRunStore) -
 
 def test_escalation_report_columns_hold_the_whole_report(sqlite_store: SqliteRunStore) -> None:
     sqlite_store.create_run(run())
-    sqlite_store.put(escalation())
+    sqlite_store.put(escalation(), lease=lease_for(sqlite_store))
     with Session(sqlite_store.engine) as session:
         row = session.get_one(DbEscalationReport, RUN)
     assert row.category == "NO_PROGRESS"
@@ -577,7 +603,9 @@ def test_escalation_report_columns_hold_the_whole_report(sqlite_store: SqliteRun
 
 def test_final_verification_columns(sqlite_store: SqliteRunStore) -> None:
     sqlite_store.create_run(run())
-    sqlite_store.append_final_verification(RUN, final_verification("c" * 40, coverage_pct=71.5))
+    sqlite_store.append_final_verification(
+        RUN, final_verification("c" * 40, coverage_pct=71.5), lease=lease_for(sqlite_store)
+    )
     with Session(sqlite_store.engine) as session:
         row = session.scalars(select(DbFinalVerification)).one()
     assert (row.mirror_commit, row.cache, row.runner_exit_code, row.coverage_pct) == (
@@ -592,9 +620,9 @@ def test_recorded_at_comes_from_the_injected_clock(
     sqlite_store: SqliteRunStore, clock: FakeClock
 ) -> None:
     sqlite_store.create_run(run())
-    sqlite_store.append(tool_call("tc-1"))
+    sqlite_store.append(tool_call("tc-1"), lease=lease_for(sqlite_store))
     clock.advance(300)
-    sqlite_store.append(tool_call("tc-2"))
+    sqlite_store.append(tool_call("tc-2"), lease=lease_for(sqlite_store))
     with Session(sqlite_store.engine) as session:
         stamps = list(session.scalars(select(DbToolCall.recorded_at).order_by(DbToolCall.seq)))
     assert stamps == [NOW, NOW + timedelta(minutes=5)]
@@ -628,10 +656,11 @@ def test_a_checkpoint_holds_the_write_lock_from_its_first_read(
     sqlite_store: SqliteRunStore,
 ) -> None:
     sqlite_store.create_run(run())
+    lease = lease_for(sqlite_store)
     seen = _statements(sqlite_store.engine)
-    sqlite_store.checkpoint(checkpoint(1))
+    sqlite_store.checkpoint(checkpoint(1), lease=lease)
     assert seen[0] == "BEGIN IMMEDIATE"
-    assert seen[1].lstrip().upper().startswith("SELECT")  # the covers() read, inside the lock
+    assert seen[1].lstrip().upper().startswith("SELECT")  # the fence and covers() reads, locked
 
 
 def test_a_second_writer_waits_for_the_first_instead_of_failing(
@@ -653,7 +682,7 @@ def test_a_second_writer_waits_for_the_first_instead_of_failing(
 
     def write_from_the_other_store() -> None:
         try:
-            b.append(tool_call("tc-waiting"))
+            b.append(tool_call("tc-waiting"), lease=lease_for(b))
         except BaseException as exc:
             errors.append(exc)
         finally:
@@ -741,7 +770,7 @@ def test_concurrent_checkpoints_from_two_stores_never_lose_or_reorder(
     def writer(store: SqliteRunStore, seqs: range) -> None:
         for seq in seqs:
             try:
-                store.checkpoint(checkpoint(seq))
+                store.checkpoint(checkpoint(seq), lease=lease_for(store))
             except StoreError:
                 continue  # a stale checkpoint: refused, as it should be
             except BaseException as exc:
@@ -794,17 +823,20 @@ def test_a_second_attempt_with_the_same_run_wide_number_is_refused(
     revert-to-best restore the wrong tree (P1-12 review, B2)."""
     sqlite_store.create_run(run())
     first = sample(d.Attempt)
-    sqlite_store.append(first)
+    sqlite_store.append(first, lease=lease_for(sqlite_store))
     with pytest.raises(StoreError, match="UNIQUE"):
-        sqlite_store.append(first.model_copy(update={"id": "attempt-other", "step_id": "s2"}))
+        sqlite_store.append(
+            first.model_copy(update={"id": "attempt-other", "step_id": "s2"}),
+            lease=lease_for(sqlite_store),
+        )
     assert sqlite_store.rows(RUN, d.Attempt) == [first]
 
 
 def test_reports_and_verdicts_keep_the_commit_they_judged(sqlite_store: SqliteRunStore) -> None:
     sqlite_store.create_run(run())
     report, verdict = sample(d.IntegrityReport), sample(d.CriticVerdict)
-    sqlite_store.append(report)
-    sqlite_store.append(verdict)
+    sqlite_store.append(report, lease=lease_for(sqlite_store))
+    sqlite_store.append(verdict, lease=lease_for(sqlite_store))
     assert sqlite_store.rows(RUN, d.IntegrityReport)[0].mirror_commit == report.mirror_commit
     assert sqlite_store.rows(RUN, d.CriticVerdict)[0].mirror_commit == verdict.mirror_commit
     with Session(sqlite_store.engine) as session:

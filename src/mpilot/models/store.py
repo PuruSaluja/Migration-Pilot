@@ -17,6 +17,12 @@ SQLite specifics, all in `sqlite_engine`:
   writers cannot both pass the check against the same predecessor. Reads use a plain `BEGIN`
   and never block on WAL.
 
+Coordination (P1-12c, `models/coordination.py`): every write of a run's state carries the
+driver `Lease` and is checked against the run's current lease inside the same transaction,
+so the check and the write cannot be separated. `checkpoint` also updates the `runs` row
+(status, paused state, spent, terminal reason) in that transaction: the checkpoint is
+authoritative, and `save_run` may not change those fields.
+
 Nothing else here is SQLite-specific, so a Postgres engine can be given to `SqliteRunStore`'s
 constructor unchanged.
 """
@@ -36,9 +42,22 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from mpilot.core.clock import Clock, SystemClock
-from mpilot.core.errors import StoreError
-from mpilot.core.types import RunId
+from mpilot.core.errors import CancelRequestedError, RunEndedError, StoreError
+from mpilot.core.types import RunId, RunStatus
 from mpilot.models.artifacts import EscalationReport, FinalVerification, MigrationNote
+from mpilot.models.coordination import (
+    CHECKPOINT_OWNED,
+    Lease,
+    PlanDecision,
+    Renewal,
+    RunControl,
+    check_fence,
+    plan_problem,
+    renew,
+    run_following,
+    take_lease,
+    transition_problems,
+)
 from mpilot.models.domain import (
     Attempt,
     Baseline,
@@ -65,12 +84,14 @@ from mpilot.models.tables import (
     DbEvalResult,
     DbFinalVerification,
     DbIntegrityReport,
+    DbLease,
     DbLLMCall,
     DbMigrationNote,
     DbPlan,
     DbPullRequest,
     DbRoutingDecision,
     DbRun,
+    DbRunControl,
     DbTestResult,
     DbToolCall,
 )
@@ -359,17 +380,59 @@ class SqliteRunStore:
     def _read(self) -> Session:
         return Session(self._engine)
 
+    # -- coordination helpers (inside a write transaction)
+
+    @staticmethod
+    def _lease_of(session: Session, run_id: RunId) -> Lease | None:
+        row = session.get(DbLease, run_id)
+        if row is None:
+            return None
+        return Lease(
+            run_id=RunId(row.run_id),
+            holder=row.holder,
+            token=row.token,
+            acquired_at=row.acquired_at,
+            expires_at=row.expires_at,
+            released_at=row.released_at,
+        )
+
+    def _fence(self, session: Session, lease: Lease, run_id: RunId) -> Lease:
+        return check_fence(self._lease_of(session, run_id), lease, run_id)
+
+    @staticmethod
+    def _control_of(session: Session, run_id: RunId) -> RunControl:
+        row = session.get(DbRunControl, run_id)
+        if row is None:
+            return RunControl(run_id=run_id)
+        return RunControl(
+            run_id=run_id,
+            cancel_requested_at=row.cancel_requested_at,
+            cancel_reason=row.cancel_reason,
+            plan_decision=None if row.plan_decision is None else PlanDecision(row.plan_decision),
+            plan_reason=row.plan_reason,
+            plan_decided_at=row.plan_decided_at,
+        )
+
+    @staticmethod
+    def _run_row(session: Session, run_id: RunId) -> DbRun:
+        row = session.get(DbRun, run_id)
+        if row is None:
+            raise KeyError(run_id)
+        return row
+
     # -- runs
 
     def create_run(self, run: Run) -> None:
         with self._write() as session:
             session.add(DbRun(id=run.id, **_run_columns(run)))
 
-    def save_run(self, run: Run) -> None:
+    def save_run(self, run: Run, *, lease: Lease) -> None:
         with self._write() as session:
-            row = session.get(DbRun, run.id)
-            if row is None:
-                raise KeyError(run.id)
+            row = self._run_row(session, run.id)  # KeyError for an unknown run, before fencing
+            self._fence(session, lease, run.id)
+            problem = _checkpoint_owned_change(Run.model_validate(row.doc), run)
+            if problem:
+                raise StoreError(problem)
             for column, value in _run_columns(run).items():
                 setattr(row, column, value)
 
@@ -385,14 +448,92 @@ class SqliteRunStore:
             stmt = select(DbRun.doc).order_by(DbRun.created_at.desc(), DbRun.id.desc())
             return [Run.model_validate(doc) for doc in session.scalars(stmt)]
 
+    # -- leases and requests
+
+    def acquire_lease(self, run_id: RunId, holder: str, *, ttl_s: float) -> Lease:
+        with self._write() as session:
+            run = Run.model_validate(self._run_row(session, run_id).doc)
+            if run.status.is_terminal:
+                raise RunEndedError(f"run {run_id} has ended ({run.status})")
+            lease = take_lease(
+                self._lease_of(session, run_id), run_id, holder, now=self._clock.now(), ttl_s=ttl_s
+            )
+            session.merge(_lease_row(lease))
+            return lease
+
+    def renew_lease(self, lease: Lease, *, ttl_s: float) -> Renewal:
+        with self._write() as session:
+            renewed = renew(
+                self._lease_of(session, lease.run_id), lease, now=self._clock.now(), ttl_s=ttl_s
+            )
+            session.merge(_lease_row(renewed))
+            return Renewal(lease=renewed, control=self._control_of(session, lease.run_id))
+
+    def release_lease(self, lease: Lease) -> None:
+        with self._write() as session:
+            current = self._lease_of(session, lease.run_id)
+            if current is None or (current.token, current.holder) != (lease.token, lease.holder):
+                return  # someone else holds it now: nothing of ours to release
+            if current.released_at is None:
+                session.merge(
+                    _lease_row(current.model_copy(update={"released_at": self._clock.now()}))
+                )
+
+    def current_lease(self, run_id: RunId) -> Lease | None:
+        with self._read() as session:
+            return self._lease_of(session, run_id)
+
+    def control(self, run_id: RunId) -> RunControl:
+        with self._read() as session:
+            self._run_row(session, run_id)
+            return self._control_of(session, run_id)
+
+    def request_cancel(self, run_id: RunId, *, reason: str | None = None) -> RunControl:
+        with self._write() as session:
+            run = Run.model_validate(self._run_row(session, run_id).doc)
+            control = self._control_of(session, run_id)
+            if run.status.is_terminal or control.cancel_requested:
+                return control  # nothing to cancel, or already asked: idempotent
+            updated = control.model_copy(
+                update={"cancel_requested_at": self._clock.now(), "cancel_reason": reason}
+            )
+            session.merge(_control_row(updated))
+            return updated
+
+    def request_plan_decision(
+        self, run_id: RunId, *, approve: bool, reason: str | None = None
+    ) -> RunControl:
+        with self._write() as session:
+            run = Run.model_validate(self._run_row(session, run_id).doc)
+            control = self._control_of(session, run_id)
+            problem = _plan_decision_problem(run, control)
+            if problem:
+                raise StoreError(problem)
+            updated = RunControl.model_validate(
+                {
+                    **control.model_dump(),
+                    "plan_decision": PlanDecision.APPROVE if approve else PlanDecision.REJECT,
+                    "plan_reason": reason,
+                    "plan_decided_at": self._clock.now(),
+                }
+            )
+            session.merge(_control_row(updated))
+            return updated
+
     # -- rows
 
-    def append(self, row: AppendRow) -> None:
+    def append(self, row: AppendRow, *, lease: Lease) -> None:
         with self._write() as session:
+            self._fence(session, lease, row.run_id)
             session.add(_append_row(row, self._clock.now()))
 
-    def put(self, row: SingleRow) -> None:
+    def put(self, row: SingleRow, *, lease: Lease) -> None:
         with self._write() as session:
+            self._fence(session, lease, row.run_id)
+            if isinstance(row, Plan):
+                problem = plan_problem(row.approved, self._control_of(session, row.run_id))
+                if problem:
+                    raise StoreError(problem)
             session.merge(_single_row(row))
 
     def rows(self, run_id: RunId, kind: type[RowT]) -> Sequence[RowT]:
@@ -407,8 +548,11 @@ class SqliteRunStore:
             stmt = select(table).where(table.run_id == run_id).order_by(table.seq)  # type: ignore[attr-defined]
             return [cast(RowT, build(r)) for r in session.scalars(stmt)]
 
-    def append_final_verification(self, run_id: RunId, result: FinalVerification) -> None:
+    def append_final_verification(
+        self, run_id: RunId, result: FinalVerification, *, lease: Lease
+    ) -> None:
         with self._write() as session:
+            self._fence(session, lease, run_id)
             session.add(
                 DbFinalVerification(
                     run_id=run_id,
@@ -432,15 +576,33 @@ class SqliteRunStore:
 
     # -- checkpoints
 
-    def checkpoint(self, cp: Checkpoint) -> None:
+    def checkpoint(self, cp: Checkpoint, *, lease: Lease, rows: Sequence[AppendRow] = ()) -> None:
         with self._write() as session:
-            # BEGIN IMMEDIATE is already held, so nobody can write a checkpoint between this
-            # read and the insert below.
-            previous = session.scalar(_latest_checkpoint_doc(cp.run_id))
-            if previous is not None:
-                problems = cp.covers(Checkpoint.model_validate(previous))
-                if problems:
-                    raise StoreError("; ".join(problems))
+            # BEGIN IMMEDIATE is already held, so nobody can write between these reads and
+            # the inserts below: lease, requests, predecessor and run row are one snapshot.
+            held = self._fence(session, lease, cp.run_id)
+            control = self._control_of(session, cp.run_id)
+            if control.cancel_requested and cp.status is not RunStatus.END_CANCELLED:
+                raise CancelRequestedError(f"run {cp.run_id}: cancel requested")
+            run_row = self._run_row(session, cp.run_id)
+            run = Run.model_validate(run_row.doc)
+            doc = session.scalar(_latest_checkpoint_doc(cp.run_id))
+            previous = None if doc is None else Checkpoint.model_validate(doc)
+            problems = [] if previous is None else cp.covers(previous)
+            was = (
+                previous.unit_key[0] if previous is not None else run.paused_at_state or run.status
+            )
+            problems += transition_problems(cp.unit_key[0], was, control)
+            problems += [
+                f"row for {r.run_id} in a checkpoint of {cp.run_id}"
+                for r in rows
+                if r.run_id != cp.run_id
+            ]
+            if problems:
+                raise StoreError("; ".join(problems))
+            now = self._clock.now()
+            for row in rows:
+                session.add(_append_row(row, now))
             session.add(
                 DbCheckpoint(
                     run_id=cp.run_id,
@@ -453,6 +615,10 @@ class SqliteRunStore:
                     doc=_doc(cp),
                 )
             )
+            for column, value in _run_columns(run_following(run, cp)).items():
+                setattr(run_row, column, value)
+            if cp.status.is_terminal:  # nothing is left to drive: free the run in the same step
+                session.merge(_lease_row(held.model_copy(update={"released_at": now})))
 
     def latest_checkpoint(self, run_id: RunId) -> Checkpoint | None:
         with self._read() as session:
@@ -484,6 +650,44 @@ class SqliteRunStore:
                 EvalResult.model_validate(d)
                 for d in session.scalars(stmt.order_by(DbEvalResult.seq))
             ]
+
+
+def _checkpoint_owned_change(stored: Run, new: Run) -> str | None:
+    changed = [f for f in CHECKPOINT_OWNED if getattr(stored, f) != getattr(new, f)]
+    if not changed:
+        return None
+    return f"{', '.join(changed)} change only through a checkpoint (it is authoritative)"
+
+
+def _plan_decision_problem(run: Run, control: RunControl) -> str | None:
+    """A plan decision is recorded once, and only while the run waits for it (CP-1)."""
+    if (run.paused_at_state or run.status) is not RunStatus.AWAITING_APPROVAL:
+        return f"run {run.id} is not awaiting plan approval ({run.status})"
+    if control.plan_decision is not None:
+        return f"run {run.id}'s plan was already decided: {control.plan_decision}"
+    return None
+
+
+def _lease_row(lease: Lease) -> DbLease:
+    return DbLease(
+        run_id=lease.run_id,
+        holder=lease.holder,
+        token=lease.token,
+        acquired_at=lease.acquired_at,
+        expires_at=lease.expires_at,
+        released_at=lease.released_at,
+    )
+
+
+def _control_row(control: RunControl) -> DbRunControl:
+    return DbRunControl(
+        run_id=control.run_id,
+        cancel_requested_at=control.cancel_requested_at,
+        cancel_reason=control.cancel_reason,
+        plan_decision=_value(control.plan_decision),
+        plan_reason=control.plan_reason,
+        plan_decided_at=control.plan_decided_at,
+    )
 
 
 def _latest_checkpoint_doc(run_id: RunId) -> Any:

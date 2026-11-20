@@ -494,6 +494,55 @@ class DbEvalResult(_Append, Base):
     )
 
 
+# ---------------------------------------------------------------- coordination (P1-12c)
+
+
+class DbLease(Base):
+    """`Lease`: the run's driver lease, one row per run, updated in place. Never deleted, so
+    the fencing token only rises (a release sets `released_at`). Every field is a column."""
+
+    __tablename__ = "run_leases"
+
+    run_id: Mapped[str] = mapped_column(ForeignKey("runs.id", ondelete="CASCADE"), primary_key=True)
+    holder: Mapped[str] = mapped_column(String)
+    token: Mapped[int] = mapped_column(Integer)
+    acquired_at: Mapped[datetime]
+    expires_at: Mapped[datetime]
+    released_at: Mapped[datetime | None]
+
+    __table_args__ = (
+        CheckConstraint("token > 0", name="token_positive"),
+        CheckConstraint("expires_at > acquired_at", name="expires_after_acquired"),
+    )
+
+
+class DbRunControl(Base):
+    """`RunControl`: requests from other processes (cancel, plan decision), one row per run.
+    Every field is a column."""
+
+    __tablename__ = "run_controls"
+
+    run_id: Mapped[str] = mapped_column(ForeignKey("runs.id", ondelete="CASCADE"), primary_key=True)
+    cancel_requested_at: Mapped[datetime | None]
+    cancel_reason: Mapped[str | None] = mapped_column(Text)
+    plan_decision: Mapped[str | None] = mapped_column(String)
+    plan_reason: Mapped[str | None] = mapped_column(Text)
+    plan_decided_at: Mapped[datetime | None]
+
+    __table_args__ = (
+        CheckConstraint(
+            "plan_decision IS NULL OR " + _in("plan_decision", ("approve", "reject")),
+            name="plan_decision_known",
+        ),
+        CheckConstraint(
+            "(plan_decision IS NULL) = (plan_decided_at IS NULL)", name="plan_decided_together"
+        ),
+        CheckConstraint(
+            "cancel_reason IS NULL OR cancel_requested_at IS NOT NULL", name="reason_needs_request"
+        ),
+    )
+
+
 # ---------------------------------------------------------------- how §12 maps onto tables
 
 #: Every persisted record class (all of SPEC §12, plus the records the spec leaves implicit),
@@ -516,6 +565,8 @@ TABLE_OF: dict[str, str] = {
     "EvalResult": "eval_results",
     "MigrationNote": "migration_notes",
     "EscalationReport": "escalation_reports",
+    "Lease": "run_leases",
+    "RunControl": "run_controls",
 }
 
 #: Classes stored inside a parent's `doc` (the parent is the value).
@@ -540,11 +591,13 @@ __all__ = [
     "DbFinalVerification",
     "DbIntegrityReport",
     "DbLLMCall",
+    "DbLease",
     "DbMigrationNote",
     "DbPlan",
     "DbPullRequest",
     "DbRoutingDecision",
     "DbRun",
+    "DbRunControl",
     "DbTestResult",
     "DbToolCall",
     "Json",

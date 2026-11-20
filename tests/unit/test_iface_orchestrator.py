@@ -441,11 +441,14 @@ def test_a_forward_checkpoint_is_accepted() -> None:
 
 def test_store_refuses_a_backwards_checkpoint() -> None:
     store = MemoryStore()
-    store.checkpoint(_rich(5))
+    store.create_run(_run())
+    lease = store.acquire_lease(RUN, "t", ttl_s=60)
+    store.checkpoint(_rich(5), lease=lease)
     with pytest.raises(ValueError, match="sticky state"):
-        store.checkpoint(_rich(6).model_copy(update={"sticky": {}}))
-    store.checkpoint(_rich(6))
+        store.checkpoint(_rich(6).model_copy(update={"sticky": {}}), lease=lease)
+    store.checkpoint(_rich(6), lease=lease)
     assert store.latest_checkpoint(RUN) == _rich(6)
+    assert store.get_run(RUN).status is _rich(6).status  # the checkpoint is authoritative
 
 
 # ---------------------------------------------------------------- store contract (double)
@@ -477,11 +480,14 @@ def test_store_rows_round_trip() -> None:
     tr = TestResult(
         run_id=RUN, stage=TestStage.FULL, passed=1, failed=0, skipped=0, errors=0, duration_s=1
     )
-    store.append(tr)
-    store.append(tr.model_copy(update={"passed": 2}))
+    lease = store.acquire_lease(RUN, "t", ttl_s=60)
+    store.append(tr, lease=lease)
+    store.append(tr.model_copy(update={"passed": 2}), lease=lease)
     assert [r.passed for r in store.rows(RUN, TestResult)] == [1, 2]
-    store.save_run(_run().model_copy(update={"status": RunStatus.CLONED}))
-    assert store.get_run(RUN).status is RunStatus.CLONED
+    store.save_run(_run().model_copy(update={"branch": "mpilot/b-1"}), lease=lease)
+    assert store.get_run(RUN).branch == "mpilot/b-1"
+    with pytest.raises(ValueError, match="only through a checkpoint"):
+        store.save_run(_run().model_copy(update={"status": RunStatus.CLONED}), lease=lease)
 
 
 # ---------------------------------------------------------------- events

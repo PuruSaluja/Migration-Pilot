@@ -23,13 +23,16 @@ from typing import Any, cast
 from pydantic import BaseModel, SecretStr
 
 from mpilot.agents.runtime import BudgetGuard
+from mpilot.core.clock import Clock, SystemClock
 from mpilot.core.errors import (
     AttemptCapError,
     BudgetExceededError,
+    CancelRequestedError,
     CredentialRefusedError,
     IllegalTransition,
     PathEscapeError,
     PushRefusedError,
+    RunEndedError,
     StoreError,
 )
 from mpilot.core.types import (
@@ -64,6 +67,19 @@ from mpilot.models.artifacts import (
     WorkspaceDiff,
     check_rel_path,
 )
+from mpilot.models.coordination import (
+    CHECKPOINT_OWNED,
+    Lease,
+    PlanDecision,
+    Renewal,
+    RunControl,
+    check_fence,
+    plan_problem,
+    renew,
+    run_following,
+    take_lease,
+    transition_problems,
+)
 from mpilot.models.domain import (
     Baseline,
     Budgets,
@@ -73,6 +89,7 @@ from mpilot.models.domain import (
     EnvProfile,
     EvalResult,
     IntegrityReport,
+    Plan,
     Run,
     VerifyResult,
 )
@@ -685,25 +702,39 @@ class SimpleBudget:
 
 @dataclass
 class MemoryStore:
-    """A RunStore in dicts. Enforces `Checkpoint.covers` on every write."""
+    """A RunStore in dicts, with the same rules as the SQLite store: fenced writes,
+    `Checkpoint.covers`, the request rules, and the run updated from each checkpoint."""
 
+    clock: Clock = field(default_factory=SystemClock)
     runs: dict[RunId, Run] = field(default_factory=dict)
     appended: dict[RunId, list[BaseModel]] = field(default_factory=lambda: defaultdict(list))
     singles: dict[tuple[RunId, type], BaseModel] = field(default_factory=dict)
     checkpoints: dict[RunId, Checkpoint] = field(default_factory=dict)
+    leases: dict[RunId, Lease] = field(default_factory=dict)
+    controls: dict[RunId, RunControl] = field(default_factory=dict)
     eval_rows: list[EvalResult] = field(default_factory=list)
     final_verifs: dict[RunId, list[FinalVerification]] = field(
         default_factory=lambda: defaultdict(list)
     )
+
+    def _fence(self, lease: Lease, run_id: RunId) -> Lease:
+        if run_id not in self.runs:
+            raise StoreError(f"no run {run_id}")
+        return check_fence(self.leases.get(run_id), lease, run_id)
 
     def create_run(self, run: Run) -> None:
         if run.id in self.runs:
             raise StoreError(f"run {run.id} exists")
         self.runs[run.id] = run
 
-    def save_run(self, run: Run) -> None:
+    def save_run(self, run: Run, *, lease: Lease) -> None:
         if run.id not in self.runs:
             raise KeyError(run.id)
+        self._fence(lease, run.id)
+        stored = self.runs[run.id]
+        changed = [f for f in CHECKPOINT_OWNED if getattr(stored, f) != getattr(run, f)]
+        if changed:
+            raise StoreError(f"{', '.join(changed)} change only through a checkpoint")
         self.runs[run.id] = run
 
     def get_run(self, run_id: RunId) -> Run:
@@ -712,10 +743,76 @@ class MemoryStore:
     def list_runs(self) -> Sequence[Run]:
         return sorted(self.runs.values(), key=lambda r: r.created_at, reverse=True)
 
-    def append(self, row: AppendRow) -> None:
+    def acquire_lease(self, run_id: RunId, holder: str, *, ttl_s: float) -> Lease:
+        run = self.runs[run_id]
+        if run.status.is_terminal:
+            raise RunEndedError(f"run {run_id} has ended ({run.status})")
+        lease = take_lease(
+            self.leases.get(run_id), run_id, holder, now=self.clock.now(), ttl_s=ttl_s
+        )
+        self.leases[run_id] = lease
+        return lease
+
+    def renew_lease(self, lease: Lease, *, ttl_s: float) -> Renewal:
+        renewed = renew(self.leases.get(lease.run_id), lease, now=self.clock.now(), ttl_s=ttl_s)
+        self.leases[lease.run_id] = renewed
+        return Renewal(lease=renewed, control=self.control(lease.run_id))
+
+    def release_lease(self, lease: Lease) -> None:
+        current = self.leases.get(lease.run_id)
+        if current is None or (current.token, current.holder) != (lease.token, lease.holder):
+            return
+        if current.released_at is None:
+            self.leases[lease.run_id] = current.model_copy(update={"released_at": self.clock.now()})
+
+    def current_lease(self, run_id: RunId) -> Lease | None:
+        return self.leases.get(run_id)
+
+    def control(self, run_id: RunId) -> RunControl:
+        if run_id not in self.runs:
+            raise KeyError(run_id)
+        return self.controls.get(run_id, RunControl(run_id=run_id))
+
+    def request_cancel(self, run_id: RunId, *, reason: str | None = None) -> RunControl:
+        control = self.control(run_id)
+        if self.runs[run_id].status.is_terminal or control.cancel_requested:
+            return control
+        control = control.model_copy(
+            update={"cancel_requested_at": self.clock.now(), "cancel_reason": reason}
+        )
+        self.controls[run_id] = control
+        return control
+
+    def request_plan_decision(
+        self, run_id: RunId, *, approve: bool, reason: str | None = None
+    ) -> RunControl:
+        control = self.control(run_id)
+        run = self.runs[run_id]
+        if (run.paused_at_state or run.status) is not RunStatus.AWAITING_APPROVAL:
+            raise StoreError(f"run {run_id} is not awaiting plan approval ({run.status})")
+        if control.plan_decision is not None:
+            raise StoreError(f"run {run_id}'s plan was already decided: {control.plan_decision}")
+        control = RunControl.model_validate(
+            {
+                **control.model_dump(),
+                "plan_decision": PlanDecision.APPROVE if approve else PlanDecision.REJECT,
+                "plan_reason": reason,
+                "plan_decided_at": self.clock.now(),
+            }
+        )
+        self.controls[run_id] = control
+        return control
+
+    def append(self, row: AppendRow, *, lease: Lease) -> None:
+        self._fence(lease, row.run_id)
         self.appended[row.run_id].append(row)
 
-    def put(self, row: SingleRow) -> None:
+    def put(self, row: SingleRow, *, lease: Lease) -> None:
+        self._fence(lease, row.run_id)
+        if isinstance(row, Plan):
+            problem = plan_problem(row.approved, self.control(row.run_id))
+            if problem:
+                raise StoreError(problem)
         self.singles[(row.run_id, type(row))] = row
 
     def rows(self, run_id: RunId, kind: type[RowT]) -> Sequence[RowT]:
@@ -724,19 +821,37 @@ class MemoryStore:
             return [cast(RowT, single)]  # put() keys singles by type(row)
         return [r for r in self.appended.get(run_id, []) if isinstance(r, kind)]
 
-    def append_final_verification(self, run_id: RunId, result: FinalVerification) -> None:
+    def append_final_verification(
+        self, run_id: RunId, result: FinalVerification, *, lease: Lease
+    ) -> None:
+        self._fence(lease, run_id)
         self.final_verifs[run_id].append(result)
 
     def final_verifications(self, run_id: RunId) -> Sequence[FinalVerification]:
         return list(self.final_verifs.get(run_id, []))
 
-    def checkpoint(self, cp: Checkpoint) -> None:
+    def checkpoint(self, cp: Checkpoint, *, lease: Lease, rows: Sequence[AppendRow] = ()) -> None:
+        held = self._fence(lease, cp.run_id)
+        control = self.control(cp.run_id)
+        if control.cancel_requested and cp.status is not RunStatus.END_CANCELLED:
+            raise CancelRequestedError(f"run {cp.run_id}: cancel requested")
+        run = self.runs[cp.run_id]
         prev = self.checkpoints.get(cp.run_id)
-        if prev is not None:
-            problems = cp.covers(prev)
-            if problems:
-                raise StoreError("; ".join(problems))
+        problems = [] if prev is None else cp.covers(prev)
+        was = prev.unit_key[0] if prev is not None else run.paused_at_state or run.status
+        problems += transition_problems(cp.unit_key[0], was, control)
+        problems += [
+            f"row for {r.run_id} in a checkpoint of {cp.run_id}"
+            for r in rows
+            if r.run_id != cp.run_id
+        ]
+        if problems:
+            raise StoreError("; ".join(problems))
+        self.appended[cp.run_id].extend(rows)
         self.checkpoints[cp.run_id] = cp
+        self.runs[cp.run_id] = run_following(run, cp)
+        if cp.status.is_terminal:
+            self.leases[cp.run_id] = held.model_copy(update={"released_at": self.clock.now()})
 
     def latest_checkpoint(self, run_id: RunId) -> Checkpoint | None:
         return self.checkpoints.get(run_id)

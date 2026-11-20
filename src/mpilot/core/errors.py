@@ -80,3 +80,22 @@ class ScriptDivergedError(RuntimeCallError):
 class CassetteMismatchError(ScriptDivergedError):
     """No recorded cassette entry matches this request (its content hash is unknown, or every
     matching entry was used). The message names which parts of the request changed."""
+
+
+class LeaseHeldError(StoreError):
+    """Another live process holds the run's driver lease: it is being driven (P1-12c)."""
+
+
+class LeaseLostError(StoreError):
+    """A write carried a lease that is no longer the run's current one (taken over after it
+    expired, released, or the run ended): the writer must stop driving at once."""
+
+
+class RunEndedError(StoreError):
+    """The run is in a terminal state: there is nothing left to drive."""
+
+
+class CancelRequestedError(MpilotError):
+    """Raised by `RunStore.checkpoint` for any checkpoint but END_CANCELLED once a cancel was
+    requested (C6). Nothing was written; the driver tears down and checkpoints END_CANCELLED.
+    Not a `StoreError`: it is a control signal, never a refused write to report as an error."""

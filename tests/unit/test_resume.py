@@ -34,6 +34,7 @@ from mpilot.agents.router import (
     fired_triggers,
 )
 from mpilot.agents.runtime import RoleCallResult, check_result, llm_call_from
+from mpilot.core.clock import FakeClock
 from mpilot.core.errors import StoreError, UsageLimitError
 from mpilot.core.types import (
     AttemptId,
@@ -50,6 +51,7 @@ from mpilot.core.types import (
     Usage,
 )
 from mpilot.models import domain as d
+from mpilot.models.coordination import Lease
 from mpilot.models.state import (
     BudgetState,
     Checkpoint,
@@ -704,6 +706,9 @@ Prompt = Callable[[Sequence[d.LLMCall], Sequence[d.LLMCall]], str]
 Unit = Sequence[tuple[Role, dict[str, Any], Prompt]]
 
 
+LEASE_TTL = 60.0
+
+
 class MiniDriver:
     """The smallest driver that follows the resume protocol (see `resume_point`): in-flight
     checkpoint before each call, rows, then a checkpoint folding them in; on resume, the
@@ -711,14 +716,27 @@ class MiniDriver:
 
     def __init__(self, path: Path, **host_kw: Any) -> None:
         self.path = path
-        self.store = SqliteRunStore.open(path)
+        self.clock = FakeClock(start=NOW)
+        self.store = SqliteRunStore.open(path, self.clock)
+        self._lease: Lease | None = None
         self.host = host(allowlists={r: frozenset({"view_file"}) for r in Role}, **host_kw)
         self.persisted_tools = 0
         self.n = 0
 
-    def reopen(self) -> None:  # a new process
+    @property
+    def lease(self) -> Lease:
+        """This process's one driver lease, taken on first use and kept."""
+        if self._lease is None:
+            self._lease = self.store.acquire_lease(RUN, "mini-driver", ttl_s=LEASE_TTL)
+        return self._lease
+
+    def reopen(self) -> None:
+        """A new process after a crash or pause: the old lease is gone with its process
+        (released on pause, expired after a crash), and the new one takes the run over."""
         self.store.close()
-        self.store = SqliteRunStore.open(self.path)
+        self.clock.advance(LEASE_TTL + 1)
+        self.store = SqliteRunStore.open(self.path, self.clock)
+        self._lease = None
 
     def latest(self) -> Checkpoint:
         found = self.store.latest_checkpoint(RUN)
@@ -730,7 +748,7 @@ class MiniDriver:
             {**base.model_dump(), "seq": base.seq + 1, "at": base.at + timedelta(seconds=1)}
             | update
         )
-        self.store.checkpoint(nxt)
+        self.store.checkpoint(nxt, lease=self.lease)
         return nxt
 
     def llm_rows(self) -> Sequence[d.LLMCall]:
@@ -745,7 +763,7 @@ class MiniDriver:
             at=cp_.at + timedelta(seconds=1),
         )
         for nxt in point.checkpoints:
-            self.store.checkpoint(nxt)
+            self.store.checkpoint(nxt, lease=self.lease)
         cp_ = point.checkpoints[-1]
         if cp_.status is RunStatus.PAUSED_LIMIT:
             cp_ = self.write(
@@ -762,7 +780,7 @@ class MiniDriver:
         new = self.host.calls[self.persisted_tools :]
         self.persisted_tools = len(self.host.calls)
         for row in new:
-            self.store.append(row)
+            self.store.append(row, lease=self.lease)
         return new
 
     def _fold(self, cp_: Checkpoint, tools: Sequence[d.ToolCall], row: d.LLMCall) -> dict[str, Any]:
@@ -800,7 +818,7 @@ class MiniDriver:
             except UsageLimitError as exc:
                 tools = self._persist_tool_rows()
                 row = self._limit_row(request, str(exc))
-                self.store.append(row)
+                self.store.append(row, lease=self.lease)
                 return self.write(
                     cp_,
                     status=RunStatus.PAUSED_LIMIT,
@@ -812,7 +830,7 @@ class MiniDriver:
             check_result(request, result)
             tools = self._persist_tool_rows()
             row = llm_call_from(request, result, runtime=runtime.name, redact=no_redact)
-            self.store.append(row)
+            self.store.append(row, lease=self.lease)
             if crash_after_row:  # the process dies before the checkpoint that folds it in
                 return cp_
             done.append(row)
@@ -839,7 +857,8 @@ class MiniDriver:
         self.store.append(
             decision.model_copy(
                 update={"id": decision_id, "run_id": RUN, "role": role, "step_id": step}
-            )
+            ),
+            lease=self.lease,
         )
         return req(
             context=ctx(
@@ -913,7 +932,7 @@ REPAIR: Unit = [
 
 
 def _start_attempt(drv: MiniDriver) -> None:
-    drv.store.checkpoint(cp(0))
+    drv.store.checkpoint(cp(0), lease=drv.lease)
 
 
 def _diag(output: dict[str, Any] = HYPOTHESES) -> ScriptedCall:
@@ -1033,7 +1052,8 @@ def test_a_pause_between_analyzer_and_planner_keeps_the_analysis_report(
             attempt_n=None,
             attempt_id=None,
             budget=budget(0),
-        )
+        ),
+        lease=driver.lease,
     )
 
     def plan_prompt(done: Sequence[d.LLMCall], rows: Sequence[d.LLMCall]) -> str:

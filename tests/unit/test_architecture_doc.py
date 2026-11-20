@@ -16,7 +16,7 @@ import pytest
 from mpilot.agents import cassette, fake_runtime, router, runtime
 from mpilot.core import types as core_types
 from mpilot.knowledge import base as kb
-from mpilot.models import artifacts, state
+from mpilot.models import artifacts, coordination, state
 from mpilot.orchestrator import base as ob
 from mpilot.policy import gate, hooks
 from mpilot.policy import test_files as tf
@@ -114,6 +114,10 @@ VALUE_TYPES: list[type] = [
     state.BudgetState,
     state.Checkpoint,
     state.ResumePoint,  # P1-12b
+    coordination.PlanDecision,  # P1-12c
+    coordination.Lease,
+    coordination.RunControl,
+    coordination.Renewal,
     kb.DetectOverrides,
     kb.RegistryInfo,
     kb.ChangelogChunk,
@@ -156,6 +160,12 @@ FUNCTIONS = [
     "explorer_question_hash",  # P1-12b
     "resume_point",
     "latest_output",
+    "take_lease",  # P1-12c
+    "check_fence",
+    "renew",
+    "transition_problems",
+    "run_following",
+    "plan_problem",
 ]
 
 
@@ -217,6 +227,8 @@ FIELD_CHECKED: list[type] = [
     state.BudgetState,
     state.Checkpoint,
     state.ResumePoint,
+    coordination.Lease,
+    coordination.RunControl,
 ]
 
 

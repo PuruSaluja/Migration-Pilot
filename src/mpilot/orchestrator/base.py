@@ -19,6 +19,7 @@ from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_validato
 from mpilot.agents.runtime import BudgetGuard
 from mpilot.core.types import LLMCallId, RunId, RunStatus, StepId, Usage
 from mpilot.models.artifacts import EscalationReport, FinalVerification, MigrationNote
+from mpilot.models.coordination import Lease, Renewal, RunControl
 from mpilot.models.domain import (
     Attempt,
     Baseline,
@@ -150,7 +151,19 @@ class TransitionTable(Protocol):
 @runtime_checkable
 class Orchestrator(Protocol):
     """Drives runs (§7.4). Every method is safe to call after a crash: it starts from the
-    latest checkpoint."""
+    latest checkpoint.
+
+    Coordination (P1-12c, `models/coordination.py`): whatever drives a run first takes its
+    lease (`RunStore.acquire_lease`; `LeaseHeldError` = another live process is driving it)
+    and keeps that one lease for as long as it drives. It renews it at least once every
+    ttl/3 from a heartbeat that runs also during long tool calls and while waiting for
+    approval; every `Renewal` carries the run's `RunControl`, and a recorded cancel seen
+    there (or at a checkpoint, `CancelRequestedError`) means: stop the running tool call,
+    tear the sandbox down, checkpoint END_CANCELLED. It checks `RunStore.control` right
+    after taking the lease, and releases it on PAUSED_LIMIT, on leaving a wait in
+    AWAITING_APPROVAL, or on any other stop short of a terminal state (a terminal
+    checkpoint releases it itself). Every write carries the lease, so a driver that lost it
+    can write nothing. The CLI, the REST API and the UI are all such processes."""
 
     async def start(self, req: RunRequest) -> RunId:
         """Validate and record a new run in INIT. Input errors raise InputError (exit 2)
@@ -158,8 +171,11 @@ class Orchestrator(Protocol):
         ...
 
     async def drive(self, run_id: RunId) -> RunStatus:
-        """Advance until a terminal state, PAUSED_LIMIT or AWAITING_APPROVAL, and return it.
-        The CLI maps it with `exit_code_for` (C6)."""
+        """Take the lease and advance until a terminal state, PAUSED_LIMIT or (without a
+        waiting `--approve-plan` caller) AWAITING_APPROVAL, and return it. A
+        `CancelRequestedError` from any checkpoint, or a cancel in a `Renewal` from the
+        heartbeat, means: stop the running tool call, tear the sandbox down and checkpoint
+        END_CANCELLED. The CLI maps the result with `exit_code_for` (C6)."""
         ...
 
     async def resume(self, run_id: RunId) -> RunStatus:
@@ -168,15 +184,29 @@ class Orchestrator(Protocol):
         restore it (from the export after a pause, checked against the checkpoint's
         `export_digest`; from the latest host snapshot after a crash), never repeat a
         completed role call, restart an interrupted one, keep every sticky flag and counter.
-        Then `drive`."""
+        Takes the lease first, so two resumes can never both drive a run; a recorded cancel
+        ends the run END_CANCELLED instead of continuing. `resume_point(...).checkpoints`
+        are written under the lease. Then `drive`."""
         ...
 
     async def decide_plan(self, run_id: RunId, *, approve: bool, reason: str | None) -> None:
-        """`mpilot approve` (CP-1). Only valid in AWAITING_APPROVAL; reject -> END_REJECTED."""
+        """`mpilot approve` (CP-1). Records the decision (`RunStore.request_plan_decision`:
+        only in AWAITING_APPROVAL, only once). A live driver waiting in AWAITING_APPROVAL
+        reads it from its heartbeat's `Renewal.control` and applies it; with no live driver
+        this process takes the lease and applies it itself: approve -> continue driving,
+        reject -> END_REJECTED. The store refuses leaving AWAITING_APPROVAL without the
+        matching recorded decision."""
         ...
 
     async def cancel(self, run_id: RunId) -> None:
-        """Stop the run and tear down its sandbox -> END_CANCELLED (C6). Idempotent."""
+        """Stop the run and tear down its sandbox -> END_CANCELLED (C6). Idempotent; a no-op
+        for a run that already ended. Records the request first (`request_cancel`, durable),
+        so it is never lost: a live driver meets it at its next heartbeat or checkpoint, a
+        later resume before doing anything. If no live driver holds the lease, this process
+        takes it, reaps the run's containers and checkpoints END_CANCELLED itself; if one
+        does, the CLI waits until the run ends or the lease expires (then takes over), and
+        the REST API returns 202 at once. A cancel recorded before the final checkpoint wins,
+        even after the PR was opened: the run ends END_CANCELLED and the PR stays a draft."""
         ...
 
 
@@ -289,9 +319,10 @@ class RunStore(Protocol):
         """Insert a new run; an existing id is a `StoreError`."""
         ...
 
-    def save_run(self, run: Run) -> None:
-        """Update an existing run (status, env, spent, terminal reason, ...); `KeyError` if it
-        was never created."""
+    def save_run(self, run: Run, *, lease: Lease) -> None:
+        """Update an existing run (env, base_sha, branch, ...); `KeyError` if it was never
+        created. Status, paused state, spent and terminal reason are the checkpoint's
+        (`checkpoint` updates them): changing them here is a `StoreError`."""
         ...
 
     def get_run(self, run_id: RunId) -> Run:
@@ -302,14 +333,59 @@ class RunStore(Protocol):
         """Newest first (`GET /runs`, the UI runs table)."""
         ...
 
-    def append(self, row: AppendRow) -> None:
+    # Coordination (P1-12c). Every method that writes a run's state takes the driver `lease`
+    # and raises `LeaseLostError` unless it is the run's current, unreleased lease; the check
+    # is in the write's own transaction.
+
+    def acquire_lease(self, run_id: RunId, holder: str, *, ttl_s: float) -> Lease:
+        """Take the run's driver lease, with a higher fencing token than any before it.
+        Raises `LeaseHeldError` while any lease is live (whatever its holder: holder names are
+        labels, so extending your own lease is `renew_lease`), `RunEndedError` for a run in a
+        terminal state, `KeyError` for an unknown run. Atomic: of two racing processes,
+        exactly one gets it."""
+        ...
+
+    def renew_lease(self, lease: Lease, *, ttl_s: float) -> Renewal:
+        """Extend a lease that is still current (`LeaseLostError` if not), and return the
+        run's requests with it: the driver's heartbeat is how a cancel reaches a driver that
+        is not checkpointing."""
+        ...
+
+    def release_lease(self, lease: Lease) -> None:
+        """Give the run up (paused, waiting for approval, interrupted). A no-op for a lease
+        that is no longer current. A terminal checkpoint releases the lease by itself."""
+        ...
+
+    def current_lease(self, run_id: RunId) -> Lease | None:
+        """Who drives the run, for `mpilot status` (check `Lease.live`)."""
+        ...
+
+    def control(self, run_id: RunId) -> RunControl:
+        """The requests recorded for the run; `KeyError` for an unknown run."""
+        ...
+
+    def request_cancel(self, run_id: RunId, *, reason: str | None = None) -> RunControl:
+        """Record a cancel request (no lease needed; durable once this returns). Idempotent:
+        the first request is kept; a no-op for a run that already ended. From then on the
+        store refuses every checkpoint but END_CANCELLED with `CancelRequestedError`."""
+        ...
+
+    def request_plan_decision(
+        self, run_id: RunId, *, approve: bool, reason: str | None = None
+    ) -> RunControl:
+        """Record the CP-1 decision (no lease needed). `StoreError` unless the run is in
+        AWAITING_APPROVAL (or paused there) and no decision was recorded yet."""
+        ...
+
+    def append(self, row: AppendRow, *, lease: Lease) -> None:
         """Append one row; rows are never updated or deleted. A row for a run that does not
         exist, or one the schema's constraints refuse (for example an `LLMCall` whose routing
         decision was not stored first), is a `StoreError`."""
         ...
 
-    def put(self, row: SingleRow) -> None:
-        """Insert or replace the run's single record of this type (plan approval, PR)."""
+    def put(self, row: SingleRow, *, lease: Lease) -> None:
+        """Insert or replace the run's single record of this type (plan approval, PR). A
+        `Plan` whose `approved` disagrees with the recorded decision is a `StoreError`."""
         ...
 
     def rows(self, run_id: RunId, kind: type[RowT]) -> Sequence[RowT]:
@@ -317,7 +393,9 @@ class RunStore(Protocol):
         record as a one-item sequence."""
         ...
 
-    def append_final_verification(self, run_id: RunId, result: FinalVerification) -> None:
+    def append_final_verification(
+        self, run_id: RunId, result: FinalVerification, *, lease: Lease
+    ) -> None:
         """Record a final verification (§9.5). A `FinalVerification` carries no run id, so the
         caller gives it. It can recur (a failed integrity gate sends the run back once), so
         every one is kept; the current one is the last."""
@@ -327,11 +405,21 @@ class RunStore(Protocol):
         """Every final verification of the run, oldest first."""
         ...
 
-    def checkpoint(self, cp: Checkpoint) -> None:
-        """Write a checkpoint (after every tool call, NFR-4). Refuses one that would undo
-        anything the previous one recorded (`Checkpoint.covers`), with `StoreError`. The check
-        and the write are one atomic step, so two writers cannot both pass against the same
-        predecessor."""
+    def checkpoint(self, cp: Checkpoint, *, lease: Lease, rows: Sequence[AppendRow] = ()) -> None:
+        """Write a checkpoint (after every tool call and state change, NFR-4), with `rows`
+        appended in the same transaction (a role call's row with the checkpoint that folds it
+        in). In one atomic step, in this order:
+        - the lease must be current (`LeaseLostError`)
+        - a recorded cancel refuses anything but END_CANCELLED (`CancelRequestedError`;
+          nothing is written, rows included)
+        - `Checkpoint.covers` against the previous one, and `transition_problems` against the
+          recorded requests, on effective states (a paused run's `paused_at_state`):
+          END_CANCELLED needs a cancel request, END_REJECTED a reject, and leaving
+          AWAITING_APPROVAL for anything but waiting, END_ERROR or END_BUDGET_EXCEEDED an
+          approval -> `StoreError`
+        - write the rows and the checkpoint, and update the run's status, paused state, spent
+          and terminal reason from it (the checkpoint is authoritative)
+        - a terminal checkpoint also releases the lease: nothing can be written after it."""
         ...
 
     def latest_checkpoint(self, run_id: RunId) -> Checkpoint | None: ...

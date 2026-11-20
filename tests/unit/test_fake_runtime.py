@@ -502,10 +502,16 @@ def test_a_scripted_run_writes_tool_call_and_llm_call_rows_to_the_store(tmp_path
         )
         decision = SAMPLES[d.RoutingDecision]()
         assert isinstance(decision, d.RoutingDecision)
-        store.append(decision.model_copy(update={"id": RoutingDecisionId("rd-1"), "run_id": RUN}))
-        store.append(llm_call_from(request, result, runtime=runtime.name, redact=no_redact))
+        lease = store.acquire_lease(RUN, "test", ttl_s=60)
+        store.append(
+            decision.model_copy(update={"id": RoutingDecisionId("rd-1"), "run_id": RUN}),
+            lease=lease,
+        )
+        store.append(
+            llm_call_from(request, result, runtime=runtime.name, redact=no_redact), lease=lease
+        )
         for row in h.calls:  # what the real ToolHost (P4-07) persists
-            store.append(row)
+            store.append(row, lease=lease)
 
         (llm,) = store.rows(RUN, d.LLMCall)
         tool_rows = store.rows(RUN, d.ToolCall)
