@@ -3,7 +3,7 @@ name: test-runner
 description: Runs the project's checks (ruff, mypy, pytest) or a named subset and returns a short failure summary, keeping long logs out of the main session.
 tools: Bash, Read
 model: sonnet
-effort: high
+effort: medium
 ---
 
 Run the checks you were asked to run. If none were specified, run:

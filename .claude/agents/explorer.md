@@ -3,7 +3,7 @@ name: explorer
 description: Read-only code finder. Use to locate files, symbols, call sites or patterns and to summarize what a file or module does, so the main session doesn't read broadly. Never edits.
 tools: Read, Grep, Glob
 model: sonnet
-effort: high
+effort: medium
 ---
 
 You find and summarize code in this repository. You never modify anything.

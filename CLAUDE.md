@@ -28,15 +28,17 @@ Phase 0 plan → 1 foundations + interfaces → 2 sandbox/detect/baseline → 3 
 
 ## Models and quality
 - Quality over speed. Never cut corners to save tokens or time.
-- Only Opus 5.5 and Sonnet 5.5, always at high effort. Never Haiku, in code or config.
-- Each task is tagged [OPUS] or [SONNET] using the rubric in SPEC §16.1. Run the session on the model the tag names. If you're on the wrong one, say so at the start.
-- Escalate a [SONNET] task to [OPUS] after two red Sonnet sessions or when it needs a design decision, and log it in PROGRESS.md.
+- Only Opus 5.5 and Sonnet 5.5. Never Haiku, in code or config. Effort is only ever `high` or `medium`.
+- Each task is tagged using the rubric in SPEC §16.1: [OPUS] = Opus, high · [SONNET] = Sonnet, high · [SONNET-MED] = Sonnet, medium (logic-free tasks only). Run the session on the model and effort the tag names. If you're on the wrong one, say so at the start.
+- Opus always runs at high effort. Never lower effort to save usage.
+- Escalate a [SONNET-MED] task to [SONNET] after one red session or as soon as it needs program logic. Escalate a [SONNET] task to [OPUS] after two red Sonnet sessions or when it needs a design decision. Log every escalation in PROGRESS.md.
+- In the product, the Model Router picks effort as well as model (SPEC §8.4, strict rules). Medium is never allowed for Opus, the Planner, Critic, Diagnoser or Analyzer, or `test_touch` steps.
 
 ## Subagents (.claude/agents/, SPEC §16.2)
-- `test-runner` (Sonnet): run checks through it so long logs stay out of the main context.
-- `explorer` (Sonnet): use it to find code instead of reading broadly yourself.
-- `implementer` (Sonnet): in [OPUS] tasks, design first and write critical code yourself, then hand routine parts over as a precise brief (exact files, signatures, acceptance tests).
-- `spec-reviewer` (Opus): run at every phase gate and after [OPUS] tasks touching §11, the orchestrator, the Model Router or the runtime lockdown.
+- `test-runner` (Sonnet, medium): run checks through it so long logs stay out of the main context.
+- `explorer` (Sonnet, medium): use it to find code instead of reading broadly yourself. Verify anything surprising yourself.
+- `implementer` (Sonnet, high): in [OPUS] tasks, design first and write critical code yourself, then hand routine parts over as a precise brief (exact files, signatures, acceptance tests).
+- `spec-reviewer` (Opus, high): run at every phase gate and after [OPUS] tasks touching §11, the orchestrator, the Model Router or the runtime lockdown.
 - Never delegate one-file changes or vague work. Subagents start cold.
 
 ## Stack
