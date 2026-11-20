@@ -41,8 +41,8 @@ How to read it:
 ### Phase 0: Plan
 | ID | Tag | Task | Refs | Deps | Acceptance |
 |---|---|---|---|---|---|
-| P0-1 | OPUS | Task list, interface signatures, ambiguity list | §18.2 | — | Owner approves this file, `docs/decisions.md` and `docs/architecture.md` |
-| P0-2 | OPUS | Write the approved [SPEC] decisions into SPEC.md (A1, A2, A3, A8, A11, B1, B5, C1, C6, D1, D2, D6, D9, D10) plus §20 rows; fix the version in the header; update `docs/requirements.md` (typer, respx, hypothesis); D6 loopback `runs/` in `setup-dev.sh` | §20 | P0-1 | Every approved item reflected in SPEC and §20. The stricter changes from review passes 2–3 (full-pipeline final verification, stricter (d)/(e), H8 via config files, host snapshot refs) need the owner's explicit OK |
+| P0-1 | OPUS | Task list, interface signatures, ambiguity list | §18 rule 2 | — | Owner approves this file, `docs/decisions.md` and `docs/architecture.md` |
+| P0-2 | OPUS | Write the approved [SPEC] decisions into SPEC.md (A1, A2, A3, A8, A11, B1, B5, C1, C6, D1, D2, D6, D9, D10) plus §20 rows; fix the version in the header; update `docs/requirements.md` (typer, respx, hypothesis); D6 loopback `runs/` in `setup-dev.sh` | §20 | P0-1 | Every approved item reflected in SPEC and §20. The stricter changes from review passes 2–3 (full-pipeline final verification, stricter (d)/(e), H8 via config files, host snapshot refs) were explicitly approved by the owner on 2026-11-20 |
 
 ### Phase 1: Foundations
 | ID | Tag | Task | Refs | Deps | Acceptance |
@@ -51,13 +51,13 @@ How to read it:
 | P1-02 | SONNET | `core/`: enums (with END_CANCELLED), IDs, errors, `exit_code_for` (C6), `Usage.cap_tokens` (B2), token estimator `chars/3` (B3), `Clock` plus a fake clock | §7.4, §13.1, §14.5, NFR-1 | P1-01 | Tier and Effort have exactly 2 members; FailureCategory matches §14.5 exactly; exit-code matrix covers every terminal state plus PAUSED_LIMIT (exit 4 and 5 asserted); `cap_tokens` formula |
 | P1-03 | OPUS | `core/spawn.py`: explicit-env subprocess helper + token scrub at startup (A10) | §9.3, §11.3, NFR-6 | P1-02 | Test: after startup `MPILOT_GITHUB_TOKEN` is gone from `os.environ`; a child started via `spawn` sees only the keys passed; a lint test forbids `subprocess`/`os.system` outside `spawn.py` |
 | P1-04 | SONNET | Pydantic v2 domain models for every §12 class, plus `TestResult.passed_ids`/`failed_ids` (D9) | §12 | P1-02 | Every §12 field present; JSON round-trip per model; invalid tier or effort rejected; syrupy snapshot of the JSON schemas |
-| P1-05 | SONNET | Config loader: `mpilot.toml` < env `MPILOT_*` < CLI; every §6 default; tier→model ID; `routing.policy`/`effort_policy`; empty price table (B7); `config_hash`; `mpilot.toml.example` | §6, §8.4 | P1-04 | Precedence tests; defaults equal §6; `config_hash` changes exactly when a prompt, model or setting changes |
+| P1-05 | SONNET | Config loader: `mpilot.toml` < env `MPILOT_*` < CLI; every §6 default; tier→model ID; `routing.policy`/`effort_policy`; empty price table (B7); `config_hash`; `mpilot.toml.example` | §6, §8.4, NFR-11 | P1-04 | Precedence tests; defaults equal §6; `config_hash` changes exactly when a prompt, model or setting changes; the default runtime is the Agent SDK and no API key is read or required (Q9) |
 | P1-06 | SONNET | NFR-12 config validation | NFR-12, §8.2, FR-22 | P1-05 | Rejects: "haiku" in any model field or in the **value** of any `ANTHROPIC_*` override (any case; the Sonnet pin itself is accepted); effort outside {medium, high}; medium pinned to Opus or to Planner/Critic/Diagnoser/Analyzer; `all_opus` normalizes to `all_high` and is recorded |
 | P1-07 | OPUS | Interfaces with docstrings, part 1: `AgentRuntime`, `ModelRouter`/`RouteOutcome`/`RoutingContext`/`StickyState` (B9), `Tool`, `ToolHost`, `ToolPolicy`, `PolicyCheck`, `GateInput`, `TestFileClassifier` | §8, §9.1, §11 | P1-04 | mypy strict; a conformance test per Protocol; `docs/architecture.md` matches the code |
 | P1-08 | OPUS | Interfaces part 2: `Sandbox` (two containers, `frozen()`), `SandboxDriver`, `Workspace` (`walk_tree`), `VcsAdapter`, `CredentialProvider`, `Orchestrator`, `next_state`, `BudgetManager` (guard, attempts), `RunStore`, `EventBus`, `Verifier.final_verify`, knowledge drafts | §7, §9.3, §10, §11.6 | P1-07 | Same as P1-07; VcsAdapter has no merge method (asserted) |
 | P1-09 | SONNET | SQLAlchemy tables + Alembic initial migration | §12 | P1-08 | Upgrade and downgrade on a temp DB; DDL compiles for SQLite and Postgres dialects |
 | P1-10 | SONNET | `RunStore` implementation, SQLite in WAL mode | §12, NFR-4 | P1-09 | Round-trip of every model; `journal_mode` = wal; checkpoint then latest_checkpoint returns it |
-| P1-11 | SONNET | `FakeRuntime` (scripted, goes through a `ToolHost`, can raise `UsageLimitError`) + `CassetteRuntime` replay (B6) | §18.7, FR-21 | P1-07, P1-10 | Using a minimal test-double ToolHost: scripted run writes ToolCall and LLMCall rows; a scripted denial is recorded; a cassette request-hash mismatch fails loudly |
+| P1-11 | SONNET | `FakeRuntime` (scripted, goes through a `ToolHost`, can raise `UsageLimitError`) + `CassetteRuntime` replay (B6) | §18 rule 7, FR-21 | P1-07, P1-10 | Using a minimal test-double ToolHost: scripted run writes ToolCall and LLMCall rows; a scripted denial is recorded; a cassette request-hash mismatch fails loudly |
 | P1-12 | OPUS | **Phase 1 gate:** spec-reviewer on the interfaces; fix findings; freeze `docs/architecture.md` | §16.4 P1 DoD | P1-01…11 | `mpilot --help` works; checks green; spec-reviewer approves |
 
 ### Phase 2: Sandbox, detection, baseline
@@ -120,7 +120,7 @@ How to read it:
 | P4-08 | OPUS | `AgentSDKRuntime` options and lockdown builder (A4, A5) + static check at every start | §8.1, H9, NFR-12 | P4-01, P4-07 | Fake-transport tests: only `mcp__mpilot__*`; full `disallowed_tools` list; no settings sources; temp cwd/HOME/config dir; env holds only the allowed keys; no bypass-permissions mode; deny-by-default callback |
 | P4-09 | OPUS | `AgentSDKRuntime` call handling: model and `max_turns` per call; thinking on; usage including cache tokens; `models_seen` guard; usage-limit/rate-limit → `UsageLimitError` | §8.1, §8.3, FR-18, FR-21 | P4-08 | Fake-transport tests for each item; a non-routed model in usage → ForbiddenModelError |
 | P4-10 | OPUS | `mpilot selftest`, runtime part + first owner-triggered real check | §8.1, H9 | P4-09 | Real call: built-in tool refused, no user settings loaded, no Haiku used |
-| P4-11 | OPUS | Policy hooks 1: role allowlists, `run_command` denylist (A6), Editor non-test rule | §11.1, §9.1 | P4-07 | Tests first: deny and allow cases for each |
+| P4-11 | OPUS | Policy hooks 1: role allowlists, `run_command` denylist (A6, incl. environment dumps for H5), Editor non-test rule | §11.1, §9.1, H5 | P4-07 | Tests first: deny and allow cases for each |
 | P4-12 | OPUS | Policy hooks 2: test-file writes only in `test_touch`, never delete tests, H4 workflows | H3, H4 | P4-11, P2-15 | Tests first: deny and allow cases for each |
 | P4-13 | OPUS | H8 flag policy (A11) | H8, FR-8 | P4-11 | `--force`, `--legacy-peer-deps`, `--no-verify` denied in `install_deps`, `run_command` and bump without a plan justification for that flag, allowed with one; the same options set via `.npmrc`, `.yarnrc*`, workspace `pip.conf` or `npm_config_*`/`PIP_*` are denied; cheating fixture for the config-file route |
 | P4-14 | OPUS | Minimal gitleaks redaction of every tool output and every model input (A3) | §9.3, §11.3 | P4-07 | A token planted in tool output, and one planted in a prompt built from repo content, never reach the runtime |
@@ -131,7 +131,7 @@ How to read it:
 | P4-19 | OPUS | Minimal integrity on the final verification run: (a), (b), (c), (g), no new or changed test files or test configs (classifier over the host diff), no diff under `.github/workflows/**` | §11.2, H3, H4 | P3-13, P2-15 | Tests first: failing P0 test, P0 test missing from the run (excluded or renamed), JUnit/exit-code mismatch, deleted test, lower count, unresolved target, edited test file, added `conftest.py` and workflow change → each blocked |
 | P4-20 | OPUS | GitHub credentials (A10): PAT provider with a repo list; H1 checks (A9) | §11.3 (1), §11.6, H1 | P1-03 | Token refused for repos off the list; default, protected and non-`mpilot/*` branches refused |
 | P4-21 | SONNET | Push from the mirror (refspec, `GIT_ASKPASS`) + idempotent draft PR + minimal body | FR-16, H1, H2 | P4-20, P3-06 | respx tests; a rerun updates the existing PR; the token never appears in `.git/config` or argv; a push of any commit other than the final-verified one is refused |
-| P4-22 | SONNET | Cassette recording in the real runtime, secret scan before write (B6) | §18.7 | P4-09, P1-11 | A recorded cassette replays with identical results |
+| P4-22 | SONNET | Cassette recording in the real runtime, secret scan before write (B6) | §18 rule 7 | P4-09, P1-11 | A recorded cassette replays with identical results |
 | P4-23 | OPUS | Real e2e: Python repo → draft PR on a PuruSaluja test repo (owner-triggered) | §16.4 P4 DoD | P4-01…22 | Baseline → bump → agent fix → green → draft PR |
 | P4-24 | OPUS | Real e2e: Node repo → draft PR (owner-triggered) | §16.4 P4 DoD | P4-23 | Same for Node |
 | P4-25 | OPUS | Pause/resume demo + **Phase 4 gate** + re-plan Phases 5–10 using the measured pace | §16.4 P4 DoD | P4-24 | Pause/resume shown on a real run; spec-reviewer approves the runtime lockdown, policy hooks and loop; this list re-sized |
@@ -168,7 +168,7 @@ How to read it:
 | P6-06 | OPUS | Gate check (h): removed-API usages (D3) | §11.2 (h) | A remaining usage of a curated removed API blocks |
 | P6-07 | SONNET | Cheating-fixture suite: every FR-14 case plus variants (incl. the A2 hiding tricks) | FR-14 | 100% blocked |
 | P6-08 | SONNET | Diff limits + allowed-file policy | NFR-8, §11.3 | Over-limit → escalation, no PR; off-policy file rejected |
-| P6-09 | SONNET | Full gitleaks: diff, PR body, all model inputs | §11.3 | Planted secret never reaches a model input |
+| P6-09 | SONNET | Full gitleaks: diff, PR body, all model inputs; a credential added in the diff blocks the PR | §11.3, H5 | Planted secret never reaches a model input |
 | P6-10 | SONNET | License and supply-chain checks | §11.4 | Copyleft or unknown license escalates; yanked, deprecated or < 7-day-old targets rejected; dependencies not in the plan rejected |
 | P6-11 | SONNET | Ruleset-aware branch check | H1, A9 | respx tests for ruleset-protected branches |
 | P6-12 | OPUS | Adversarial pass by a fresh Opus session | §16.4 P6 | Every hole becomes a fixture and is fixed |

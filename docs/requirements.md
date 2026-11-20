@@ -46,7 +46,7 @@ Before pinning, re-check every version and API at build time (SPEC Appendix A).
 | `jinja2` | Web UI templates (HTMX and diff2html are vendored static assets, not Python packages) |
 | `docker` | Docker SDK for the sandbox driver |
 | `claude-agent-sdk` | Default `AgentSDKRuntime` (§8.1) |
-| `anthropic` | `MessagesRuntime` (§8.1) |
+| `anthropic` | `MessagesRuntime` (§8.1): interface only, never used in v1 because no API key is used (SPEC Q9) |
 | `tree-sitter`, `tree-sitter-language-pack`, `networkx` | Repo map (§10.2) |
 | `githubkit` | GitHub REST adapter (§11.6) |
 | `opentelemetry-api`, `opentelemetry-sdk`, `opentelemetry-exporter-otlp` | Tracing → Langfuse via OTLP (NFR-7) |
@@ -71,7 +71,7 @@ Before pinning, re-check every version and API at build time (SPEC Appendix A).
 | Item | Needed from | Notes |
 |---|---|---|
 | Claude Pro subscription | Phase 4 (first real call) | Tests never call real Claude; they use `FakeRuntime` or cassettes |
-| GitHub account for test repos and forks | Phase 4 | Still open (SPEC §17.3). Decide before Phase 4 |
+| GitHub account for test repos and forks | Phase 4 | The personal account `PuruSaluja` (SPEC Q8) |
 | Fine-grained PAT: Contents write + Pull requests write, scoped to the test repos only | Phase 4 | Never the Workflows permission (§11.6). Stored on the host only, never in the sandbox |
 
 ## Hardware (this machine)
