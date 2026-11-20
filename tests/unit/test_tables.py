@@ -198,9 +198,8 @@ def test_the_mapping_names_real_tables_and_real_parents() -> None:
     assert set(NESTED_IN.values()) <= set(TABLE_OF)
 
 
-def test_every_table_belongs_to_a_model_or_is_an_extra_record() -> None:
-    extras = {"escalation_reports", "migration_notes"}  # no Pydantic model yet (P5-14, P1-10)
-    assert set(Base.metadata.tables) == set(TABLE_OF.values()) | extras
+def test_every_table_belongs_to_a_model() -> None:
+    assert set(Base.metadata.tables) == set(TABLE_OF.values())
 
 
 MODELS: dict[str, type] = {
@@ -218,6 +217,8 @@ MODELS: dict[str, type] = {
     "IntegrityReport": d.IntegrityReport,
     "CriticVerdict": d.CriticVerdict,
     "EvalResult": d.EvalResult,
+    "MigrationNote": artifacts.MigrationNote,
+    "EscalationReport": artifacts.EscalationReport,
 }
 #: Columns that are not copied from a field of the model.
 BOOKKEEPING = {"seq", "recorded_at", "doc"}

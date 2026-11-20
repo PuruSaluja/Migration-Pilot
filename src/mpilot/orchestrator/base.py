@@ -18,6 +18,7 @@ from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_validato
 
 from mpilot.agents.runtime import BudgetGuard
 from mpilot.core.types import LLMCallId, RunId, RunStatus, StepId, Usage
+from mpilot.models.artifacts import EscalationReport, FinalVerification, MigrationNote
 from mpilot.models.domain import (
     Attempt,
     Baseline,
@@ -266,10 +267,17 @@ class BudgetManager(Protocol):
 
 #: Rows a run accumulates (many per run).
 AppendRow = (
-    ToolCall | LLMCall | RoutingDecision | TestResult | Attempt | IntegrityReport | CriticVerdict
+    ToolCall
+    | LLMCall
+    | RoutingDecision
+    | TestResult
+    | Attempt
+    | IntegrityReport
+    | CriticVerdict
+    | MigrationNote
 )
 #: Records a run has at most one of (upserted).
-SingleRow = Baseline | Plan | PullRequest
+SingleRow = Baseline | Plan | PullRequest | EscalationReport
 RowT = TypeVar("RowT", bound=BaseModel)
 
 
@@ -278,21 +286,26 @@ class RunStore(Protocol):
     """Authoritative run state (§10.1), SQLite in WAL mode (NFR-4), Postgres-compatible."""
 
     def create_run(self, run: Run) -> None:
-        """Insert a new run; an existing id is an error."""
+        """Insert a new run; an existing id is a `StoreError`."""
         ...
 
     def save_run(self, run: Run) -> None:
-        """Update an existing run (status, env, spent, terminal reason, ...)."""
+        """Update an existing run (status, env, spent, terminal reason, ...); `KeyError` if it
+        was never created."""
         ...
 
-    def get_run(self, run_id: RunId) -> Run: ...
+    def get_run(self, run_id: RunId) -> Run:
+        """`KeyError` for an unknown run."""
+        ...
 
     def list_runs(self) -> Sequence[Run]:
         """Newest first (`GET /runs`, the UI runs table)."""
         ...
 
     def append(self, row: AppendRow) -> None:
-        """Append one row; rows are never updated or deleted."""
+        """Append one row; rows are never updated or deleted. A row for a run that does not
+        exist, or one the schema's constraints refuse (for example an `LLMCall` whose routing
+        decision was not stored first), is a `StoreError`."""
         ...
 
     def put(self, row: SingleRow) -> None:
@@ -304,9 +317,21 @@ class RunStore(Protocol):
         record as a one-item sequence."""
         ...
 
+    def append_final_verification(self, run_id: RunId, result: FinalVerification) -> None:
+        """Record a final verification (§9.5). A `FinalVerification` carries no run id, so the
+        caller gives it. It can recur (a failed integrity gate sends the run back once), so
+        every one is kept; the current one is the last."""
+        ...
+
+    def final_verifications(self, run_id: RunId) -> Sequence[FinalVerification]:
+        """Every final verification of the run, oldest first."""
+        ...
+
     def checkpoint(self, cp: Checkpoint) -> None:
         """Write a checkpoint (after every tool call, NFR-4). Refuses one that would undo
-        anything the previous one recorded (`Checkpoint.covers`)."""
+        anything the previous one recorded (`Checkpoint.covers`), with `StoreError`. The check
+        and the write are one atomic step, so two writers cannot both pass against the same
+        predecessor."""
         ...
 
     def latest_checkpoint(self, run_id: RunId) -> Checkpoint | None: ...

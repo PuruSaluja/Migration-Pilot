@@ -63,3 +63,9 @@ class PushRefusedError(MpilotError):
 class CredentialRefusedError(MpilotError):
     """The credential provider refused a repo that is not on its configured list (§11.3
     control 1, A10)."""
+
+
+class StoreError(MpilotError, ValueError):
+    """The run store refused a write: a duplicate id, a row for a run that does not exist, a
+    value the schema's constraints forbid, or a checkpoint that would undo what the previous
+    one recorded (B5). A `ValueError` too, so callers that only care that it failed can say so."""

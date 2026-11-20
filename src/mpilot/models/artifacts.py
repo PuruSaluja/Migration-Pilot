@@ -14,10 +14,18 @@ import hashlib
 import json
 import re
 from enum import StrEnum
-from typing import Annotated, Literal, Self
+from typing import Annotated, Any, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    AwareDatetime,
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_validator,
+    model_validator,
+)
 
+from mpilot.core.types import FailureCategory, RunId
 from mpilot.models.domain import Ecosystem, NonNegInt, Percent, TestResult, TestStage, VerifyResult
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -309,3 +317,26 @@ class ExportManifest(ArtifactModel):
     def digest(self) -> str:
         canon = [[p, e.mode, e.sha256] for p, e in sorted(self.entries.items())]
         return hashlib.sha256(json.dumps(canon, separators=(",", ":")).encode()).hexdigest()
+
+
+class MigrationNote(ArtifactModel):
+    """One `write_note` call (§9.1, §10.1): a confirmed fact, a rejected hypothesis or a repo
+    convention. Every write is kept; the current note for a key is the latest one. The ≤ 2k-token
+    cap applies when notes are injected into a prompt, not when they are stored."""
+
+    run_id: RunId
+    key: str = Field(min_length=1)
+    text: str
+
+
+class EscalationReport(ArtifactModel):
+    """The FR-17 escalation report, one per run. `report_md` is `report.md` as written; `data`
+    holds the structured parts (failing tests, the top 3 hypotheses, attempts, budget used),
+    whose exact shape P5-14 fixes. Written for every non-success ending except rejected and
+    cancelled (§7.4 Budget endings)."""
+
+    run_id: RunId
+    category: FailureCategory
+    report_md: str = Field(min_length=1)
+    data: dict[str, Any] = Field(default_factory=dict)
+    created_at: AwareDatetime

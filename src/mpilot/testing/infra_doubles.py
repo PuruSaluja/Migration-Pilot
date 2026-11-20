@@ -30,6 +30,7 @@ from mpilot.core.errors import (
     IllegalTransition,
     PathEscapeError,
     PushRefusedError,
+    StoreError,
 )
 from mpilot.core.types import (
     AttemptId,
@@ -687,10 +688,13 @@ class MemoryStore:
     singles: dict[tuple[RunId, type], BaseModel] = field(default_factory=dict)
     checkpoints: dict[RunId, Checkpoint] = field(default_factory=dict)
     eval_rows: list[EvalResult] = field(default_factory=list)
+    final_verifs: dict[RunId, list[FinalVerification]] = field(
+        default_factory=lambda: defaultdict(list)
+    )
 
     def create_run(self, run: Run) -> None:
         if run.id in self.runs:
-            raise ValueError(f"run {run.id} exists")
+            raise StoreError(f"run {run.id} exists")
         self.runs[run.id] = run
 
     def save_run(self, run: Run) -> None:
@@ -716,12 +720,18 @@ class MemoryStore:
             return [cast(RowT, single)]  # put() keys singles by type(row)
         return [r for r in self.appended.get(run_id, []) if isinstance(r, kind)]
 
+    def append_final_verification(self, run_id: RunId, result: FinalVerification) -> None:
+        self.final_verifs[run_id].append(result)
+
+    def final_verifications(self, run_id: RunId) -> Sequence[FinalVerification]:
+        return list(self.final_verifs.get(run_id, []))
+
     def checkpoint(self, cp: Checkpoint) -> None:
         prev = self.checkpoints.get(cp.run_id)
         if prev is not None:
             problems = cp.covers(prev)
             if problems:
-                raise ValueError("; ".join(problems))
+                raise StoreError("; ".join(problems))
         self.checkpoints[cp.run_id] = cp
 
     def latest_checkpoint(self, run_id: RunId) -> Checkpoint | None:

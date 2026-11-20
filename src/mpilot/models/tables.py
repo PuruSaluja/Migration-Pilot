@@ -159,11 +159,10 @@ class DbPullRequest(Base):
 
 
 class DbEscalationReport(Base):
-    """The escalation report (FR-17), one per run. Its model is defined in P5-14.
-
-    `report_md` is `report.md` as written; `data` holds the structured parts (failing tests,
-    the top 3 hypotheses, attempts, budget used). `category` is a `FailureCategory` value.
-    """
+    """`EscalationReport` (FR-17), one per run. Every field of the model is a column, so there
+    is no `doc`: `report_md` is `report.md` as written, `data` the structured parts (failing
+    tests, the top 3 hypotheses, attempts, budget used; P5-14 fixes its shape), `category` a
+    `FailureCategory` value."""
 
     __tablename__ = "escalation_reports"
 
@@ -418,7 +417,8 @@ class DbCriticVerdict(_Append, Base):
 
 
 class DbMigrationNote(_Append, Base):
-    """A `write_note` call (§9.1, §10.1): confirmed facts, rejected hypotheses, conventions.
+    """`MigrationNote`, one per `write_note` call (§9.1, §10.1): confirmed facts, rejected
+    hypotheses, conventions. Every field of the model is a column, so there is no `doc`.
 
     Append-only so the history stays traceable (G6); the current note for a key is its
     highest `seq`. The ≤ 2k-token injection cap is applied when notes are read, not here.
@@ -468,8 +468,9 @@ class DbEvalResult(_Append, Base):
 
 # ---------------------------------------------------------------- how §12 maps onto tables
 
-#: Every class in SPEC §12 and the nested value types of `models/domain.py`, mapped to the
-#: table that stores it. A test checks this against the spec so no model goes unpersisted.
+#: Every persisted record class (all of SPEC §12, plus the records the spec leaves implicit),
+#: mapped to the table that stores it. A test checks this against the spec so no model goes
+#: unpersisted.
 TABLE_OF: dict[str, str] = {
     "Run": "runs",
     "Baseline": "baselines",
@@ -485,6 +486,8 @@ TABLE_OF: dict[str, str] = {
     "IntegrityReport": "integrity_reports",
     "CriticVerdict": "critic_verdicts",
     "EvalResult": "eval_results",
+    "MigrationNote": "migration_notes",
+    "EscalationReport": "escalation_reports",
 }
 
 #: Classes stored inside a parent's `doc` (the parent is the value).

@@ -86,6 +86,8 @@ VALUE_TYPES: list[type] = [
     artifacts.TestCounts,
     artifacts.FinalVerification,
     artifacts.ApiPattern,
+    artifacts.MigrationNote,  # P1-10
+    artifacts.EscalationReport,
     # P1-08
     sb.ContainerRuntime,
     sb.RuntimeInfo,

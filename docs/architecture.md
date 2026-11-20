@@ -476,15 +476,22 @@ class BudgetManager(Protocol):                       # never downgrades: refuses
     def record_sandbox_seconds(self, seconds: float) -> None: ...
     def pause(self) -> None: ...; def resume(self) -> None: ...; def check_time(self) -> None: ...
 
-AppendRow = ToolCall | LLMCall | RoutingDecision | TestResult | Attempt | IntegrityReport | CriticVerdict
-SingleRow = Baseline | Plan | PullRequest
+AppendRow = ToolCall | LLMCall | RoutingDecision | TestResult | Attempt | IntegrityReport | CriticVerdict | MigrationNote
+SingleRow = Baseline | Plan | PullRequest | EscalationReport
+
+# models/artifacts.py (frozen, like the other artifacts)
+class MigrationNote(ArtifactModel): run_id: RunId; key: str; text: str          # one `write_note` call, all kept
+class EscalationReport(ArtifactModel):                                           # FR-17, one per run
+    run_id: RunId; category: FailureCategory; report_md: str; data: dict[str, Any]; created_at: datetime
 
 class RunStore(Protocol):                            # SQLite WAL (P1-10)
     def create_run(self, run: Run) -> None: ...; def save_run(self, run: Run) -> None: ...
     def get_run(self, run_id: RunId) -> Run: ...; def list_runs(self) -> Sequence[Run]: ...
     def append(self, row: AppendRow) -> None: ...; def put(self, row: SingleRow) -> None: ...
     def rows(self, run_id: RunId, kind: type[RowT]) -> Sequence[RowT]: ...
-    def checkpoint(self, cp: Checkpoint) -> None: ...          # refuses one that fails cp.covers(previous)
+    def append_final_verification(self, run_id: RunId, result: FinalVerification) -> None: ...   # has no run_id itself
+    def final_verifications(self, run_id: RunId) -> Sequence[FinalVerification]: ...             # oldest first
+    def checkpoint(self, cp: Checkpoint) -> None: ...          # StoreError if cp.covers(previous) fails; check + write atomic
     def latest_checkpoint(self, run_id: RunId) -> Checkpoint | None: ...
     def add_eval(self, result: EvalResult) -> None: ...; def evals(self, suite: str) -> Sequence[EvalResult]: ...
 
@@ -525,12 +532,12 @@ their parent's `doc`.
 | Table | Stores | Kind |
 |---|---|---|
 | `runs` | `Run` (+ nested `MigrationSpec`, `EnvProfile`, budgets, spent) | upserted |
-| `baselines`, `plans`, `pull_requests`, `escalation_reports` | `Baseline`, `Plan` (+ nested `Step`), `PullRequest`, the FR-17 report (`report_md` + `data`; its model comes in P5-14) | one per run, upserted |
+| `baselines`, `plans`, `pull_requests`, `escalation_reports` | `Baseline`, `Plan` (+ nested `Step`), `PullRequest`, `EscalationReport` (FR-17; every field is a column; P5-14 fixes the shape of `data`) | one per run, upserted |
 | `checkpoints` | `Checkpoint`, PK `(run_id, seq)` | append-only |
 | `attempts` | `Attempt` (+ nested `Diagnosis`; `signature`, `category` copied out) | append-only |
 | `tool_calls`, `routing_decisions`, `llm_calls` | `ToolCall`, `RoutingDecision`, `LLMCall` (FK to its decision) | append-only |
 | `test_results`, `final_verifications`, `integrity_reports`, `critic_verdicts` | `TestResult`, `FinalVerification`, `IntegrityReport`, `CriticVerdict` | append-only |
-| `migration_notes` | one row per `write_note` call; the current note for a key is its highest `seq` | append-only |
+| `migration_notes` | `MigrationNote`, one row per `write_note` call; the current note for a key is its highest `seq` | append-only |
 | `eval_results` | `EvalResult` (bench rows, no run FK) | append-only |
 
 Append-only tables have `seq` (insertion order) and `recorded_at` (the store's `Clock`, UTC). Child
@@ -545,6 +552,23 @@ same on an open connection, and `upgrade_sql`/`downgrade_sql` that print the SQL
 without a server). `0001_initial_schema` is generated, then frozen (it imports no app code); a
 test compares the migrated schema to `tables.py`, so changing a table without a new revision
 fails the build.
+
+### The SQLite store (`models/store.py`, P1-10)
+
+`SqliteRunStore.open(path, clock)` creates the file, migrates it to the latest Alembic revision
+and returns the `RunStore`. It takes any engine in its constructor; only `sqlite_engine` is
+SQLite-specific.
+
+- **WAL**, `synchronous=NORMAL`, foreign keys on, a 30 s busy timeout (a second writer waits).
+- **Transactions are explicit.** Writes begin `BEGIN IMMEDIATE`, reads a plain `BEGIN` (never
+  blocked by a writer in WAL). A checkpoint reads its predecessor and writes inside one write
+  transaction, so two writers cannot both pass `covers()` against the same predecessor.
+- **Errors:** `StoreError` (a `ValueError`) for any refused write: duplicate id, a row for an
+  unknown run, a CHECK or FK violation, a checkpoint that undoes something. `KeyError` for an
+  unknown run on `get_run`/`save_run`. `TypeError` for a record type the store doesn't hold.
+- A database whose revision is newer than the code is refused at open (Alembic error), never
+  silently used.
+- `MemoryStore` (the double) runs the same contract tests as the real store.
 
 `Clock` is `core/clock.py` (P1-02).
 Test doubles: `DictTable`, `ScriptedOrchestrator`, `SimpleBudget`, `MemoryStore`, `MemoryBus`.
