@@ -4,12 +4,13 @@
 Phase 1: Foundations
 
 ## Next task
-[SONNET] P1-03 is tagged [OPUS]: `core/spawn.py` explicit-env subprocess helper + token scrub at startup (see the Phase 1 table). Run the session on Opus 5.5 at high effort.
+[SONNET] P1-04: Pydantic v2 domain models for every §12 class, plus `TestResult.passed_ids`/`failed_ids` (D9) (see the Phase 1 table). Run the session on Sonnet 5.5 at high effort.
 
 ## In progress
 (none)
 
 ## Done
+- P1-03 (2026-11-20): `core/spawn.py` (`run`/`start`/`inherit`: explicit env only, absolute argv[0] and PATH entries, token refused in argv/env keys/cwd and in env values unless `pass_github_token`, own session, timeout kills the group and returns within a grace period) and `core/github_token.py` (read once from `MPILOT_GITHUB_TOKEN` or a 0600, owner-only, non-symlink file outside any git work tree; env var removed and its bytes wiped in place so `/proc/<pid>/environ` no longer shows it). CLI scrubs first thing. AST lint forbids every process-starting form outside `spawn.py`. Spec-reviewer: first pass 2 blockers + 5 non-blocking, all fixed; second pass approved, and 3 of its 5 non-blocking points fixed (duplicate env entries all wiped, reap on interrupt during the kill grace, `from importlib import import_module` in the lint). 184 tests green.
 - P1-02 (2026-11-20): `core/` = `types.py` (enums, ID NewTypes + generators, `ExitCode`, `exit_code_for`, `Usage.cap_tokens`), `tokens.py` (chars/3), `clock.py` (`Clock`, `SystemClock`, `FakeClock`), `errors.py`. 80 tests, all checks green.
 - P1-01 (2026-11-20): scaffold. `pyproject.toml` + `uv.lock` (full runtime/dev dependency list from `docs/requirements.md`), ruff/mypy strict/pytest config, E1 marker policy as a pytest plugin (`mpilot.testing.policy`, tested with pytester), `.pre-commit-config.yaml` (local hooks: ruff, mypy, gitleaks; pytest on pre-push; installed), `.gitignore`, JSON-lines logging (`mpilot.core.log`), Typer app with every §13.1 command stubbed (exit 1 + JSON log). 24 tests, all checks green.
 - Pre-P0 env prep: `docs/requirements.md` (host tools, Python deps, accounts), `scripts/setup-dev.sh` (Docker Engine + gVisor + gh + gitleaks), `scripts/check-env.sh` (read-only verifier). Host OS resolved as SPEC Q7.
@@ -22,6 +23,9 @@ Phase 1: Foundations
 ## Blockers
 - None for Phase 1.
 - Before Phase 4 (owner): create the fine-grained PAT (§11.6).
+- For P4-08 (found in P1-03): the Agent SDK's subprocess transport starts the Claude CLI with a copy of the whole `os.environ` merged with `options.env` (`claude_agent_sdk/_internal/transport/subprocess_cli.py`, ~line 764). The GitHub token is already scrubbed, but the §8.1 item 8 allowlist needs a custom transport, or a scrubbed `os.environ` at call time; `inherit()`/`spawn` can't cover it.
+- For P1-05: move the token-file path from env `MPILOT_GITHUB_TOKEN_FILE` into the config loader.
+- For P8-01 and any new entrypoint: call `load_github_token()` first thing, as the CLI callback does.
 
 ## Decisions (short notes; formal ones go in SPEC.md §20)
 - 2026-11-19: SPEC v1.3 adds strict effort routing (medium/high) for both the product router (§8.4) and the build process (§16.1 [SONNET-MED] tag, §16.2 subagent efforts). See §20.
@@ -31,6 +35,10 @@ Phase 1: Foundations
 
 - 2026-11-20 (P1-01): the E1 policy plugin lives in `src/mpilot/testing/policy.py` (so mypy --strict covers it) and is loaded with `-p` in `addopts`. A docker-marked test without Docker is reported as a setup ERROR (red), not a skip. `run` also takes `--from` and `--replace` (from FR-1; absent from the §13.1 usage line). Budget flags default to `None` so the §6 defaults live only in the config loader (P1-05). Ruff excludes `*.md` because it otherwise reformats code blocks in `docs/architecture.md`. `types-docker` added to dev deps for mypy.
 - 2026-11-20 (P1-02): §14.5 writes `BASELINE_RED/FLAKY` and `NO_PROGRESS/OSCILLATION`; each is ONE `FailureCategory` member named by its first token (matches §8.4's use of `NO_PROGRESS`), giving 17 members as docs/architecture.md says. A test parses SPEC §14.5 so the enum cannot drift. `exit_code_for` raises `ValueError` for non-terminal states other than PAUSED_LIMIT. Exit 130 is the constant `EXIT_INTERRUPTED`, not an `ExitCode` member. `Usage` gained `__add__` for budget accumulation.
+- 2026-11-20 (P1-03): `spawn` requires an absolute executable and absolute PATH entries, so a binary planted in a workspace or mirror can never run on the host via cwd or PATH lookup (NFR-6). If both the env var and a token file are set, the env var wins (with a warning). The token check in `spawn` compares against the loaded token's value, so it needs startup to have run.
+- 2026-11-20 (P1-03), left open from review pass 2, owner may want a spec note:
+  - Residual risk: the token also lives in process heap memory. A same-uid child could read it through `/proc/<ppid>/mem` only if `kernel.yama.ptrace_scope=0`; this host has 1, which blocks it. `prctl(PR_SET_DUMPABLE, 0)` would close it, but it makes `/proc/self/*` unreadable to mpilot itself, so not done. Candidate for a SPEC §17.1 risk row.
+  - `spawn.run` does not kill background grandchildren after a normal exit (the child is already reaped, so killing its group id could hit a reused pid). Callers start only trusted host tools. If a grandchild holds the pipes past `timeout_s`, the result reports `timed_out=True` even though the direct child had exited.
 
 ## Task list
 

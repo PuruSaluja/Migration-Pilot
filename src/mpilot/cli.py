@@ -8,13 +8,17 @@ flags come from the config loader (P1-05), so those flags default to `None` here
 from __future__ import annotations
 
 import logging
+import os
 from pathlib import Path
 from typing import Annotated
 
 import typer
 
 from mpilot import __version__
+from mpilot.core.errors import ConfigError
+from mpilot.core.github_token import load_github_token
 from mpilot.core.log import configure_logging
+from mpilot.core.types import ExitCode
 
 logger = logging.getLogger("mpilot.cli")
 
@@ -31,6 +35,8 @@ bench_app = typer.Typer(
     rich_markup_mode=None,
 )
 app.add_typer(bench_app, name="bench")
+
+TOKEN_FILE_ENV = "MPILOT_GITHUB_TOKEN_FILE"  # noqa: S105  (a variable name, not a secret)
 
 RunId = Annotated[str, typer.Argument(help="Run id.")]
 
@@ -60,7 +66,20 @@ def main(
 ) -> None:
     """MigrationPilot command line."""
     del version  # handled eagerly by the callback
+    # A10: read the GitHub token once and scrub it from the environment before anything else
+    # runs, even logging setup. The env var is removed even when loading fails.
+    # Every other entrypoint (the P8 API server, bench workers) must do the same first.
+    # TODO(P1-05): the token-file path moves into the config loader (`MPILOT_*` env + toml).
+    token_file = os.environ.get(TOKEN_FILE_ENV)
+    token_error: ConfigError | None = None
+    try:
+        load_github_token(token_file=Path(token_file) if token_file else None)
+    except ConfigError as exc:
+        token_error = exc
     configure_logging(log_level.upper())
+    if token_error is not None:
+        logger.error("invalid GitHub token configuration", extra={"error": str(token_error)})
+        raise typer.Exit(code=ExitCode.INPUT_ERROR) from token_error
 
 
 @app.command()
