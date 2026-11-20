@@ -5,7 +5,6 @@ Phase 1: Foundations
 
 ## Next task
 [SONNET] P1-01: Scaffold (see the Phase 1 table). Run the session on Sonnet 5.5 at high effort.
-Owner, before Phase 2: set WSL memory to 12 GB (`.wslconfig`) and re-run `bash scripts/setup-dev.sh` for the loopback `runs/` filesystem; `scripts/check-env.sh` must pass.
 
 ## In progress
 (none)
@@ -15,11 +14,11 @@ Owner, before Phase 2: set WSL memory to 12 GB (`.wslconfig`) and re-run `bash s
 - Host setup run by owner 2026-11-19: native Docker Engine, gVisor verified (`docker run --runtime=runsc` reports kernel `4.19.0-gvisor`, systrap platform), gh and gitleaks installed. No runc fallback needed.
 - Repo on GitHub: `PuruSaluja/Migration-Pilot` (public). History rewritten to the noreply email before the final push.
 - P0-1: task list (below), `docs/decisions.md`, `docs/architecture.md`. Two spec-reviewer passes; all findings fixed. Approved by the owner 2026-11-19.
+- Host finished 2026-11-20: WSL 12 GB (11 GiB visible), `runs/` on a 50 GB loopback image, `check-env.sh` all required checks pass.
 - P0-2: SPEC v1.4 written (new §9.5, §20 rows), `.claude/settings.json` pins the background model to Sonnet, loopback `runs/` in `setup-dev.sh`, checks in `check-env.sh`.
 
 ## Blockers
 - None for Phase 1.
-- Before Phase 2 (owner): WSL memory 12 GB in `.wslconfig` (Q10). The loopback `runs/` is already mounted; optionally fix its fstab line (`0 0`, `discard`).
 - Before Phase 4 (owner): create the fine-grained PAT (§11.6).
 
 ## Decisions (short notes; formal ones go in SPEC.md §20)
