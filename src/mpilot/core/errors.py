@@ -38,3 +38,28 @@ class LockdownViolation(MpilotError):  # noqa: N818  (the name SPEC §8.1/archit
 class RuntimeCallError(MpilotError):
     """A role call failed for a reason other than a usage limit, a forbidden model or the
     lockdown: transport failure, a result that contradicts its request, and so on."""
+
+
+class AttemptCapError(MpilotError):
+    """An NFR-3 attempt cap (per step or per run) was reached. Unlike a turn, token or time
+    cap (BudgetExceededError -> END_BUDGET_EXCEEDED), this ends the run as ESCALATED with
+    category BUDGET_EXHAUSTED (§7.4 Budget endings)."""
+
+
+class PathEscapeError(MpilotError):
+    """A workspace path tried to leave the workspace, follow a symlink, or open something that
+    is not a regular file or directory (§9.5, FR-10). The tool call is denied."""
+
+
+class IllegalTransition(MpilotError):  # noqa: N818  (the name the architecture uses)
+    """The §7.4 state machine has no edge for this (state, event) pair."""
+
+
+class PushRefusedError(MpilotError):
+    """A push was refused: not an `mpilot/*` branch, the default or a protected branch (H1),
+    or not the commit final verification ran on (§9.5)."""
+
+
+class CredentialRefusedError(MpilotError):
+    """The credential provider refused a repo that is not on its configured list (§11.3
+    control 1, A10)."""

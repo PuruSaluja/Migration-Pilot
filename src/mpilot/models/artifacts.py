@@ -230,3 +230,82 @@ class ApiPattern(ArtifactModel):
         except re.error as exc:
             raise ValueError(f"pattern does not compile: {exc}") from None
         return v
+
+
+# ---------------------------------------------------------------- P1-08: workspace and mirror data
+
+
+class FileBlob(ArtifactModel):
+    """One file as stored in a host mirror ref: its mode and raw bytes. For a symlink
+    (mode 120000) `data` is the link target, which is written as a link, never followed."""
+
+    mode: GitMode
+    data: bytes
+
+
+class FileDiff(ArtifactModel):
+    """What one host-side edit did (FR-10: every edit records a unified diff)."""
+
+    path: RelPath
+    kind: ChangeKind
+    unified: str  # unified diff text, "" for binary content
+
+    @field_validator("path")
+    @classmethod
+    def _path(cls, v: str) -> str:
+        return check_rel_path(v)
+
+
+class EntryType(StrEnum):
+    FILE = "file"
+    DIR = "dir"
+    SYMLINK = "symlink"  # listed, never followed
+    OTHER = "other"  # FIFO, device, socket: listed so the model sees it, never opened
+
+
+class DirEntry(ArtifactModel):
+    path: RelPath
+    type: EntryType
+    size: NonNegInt  # bytes from lstat; 0 for directories
+
+
+class ArtifactRules(ArtifactModel):
+    """Which *untracked* paths the host walk leaves out (§9.5). Built from host-owned data
+    only: the mirror's `.gitignore` files at base_sha plus a fixed list. Workspace git state
+    never decides exclusions, and paths tracked at base_sha are never excluded."""
+
+    #: (directory the .gitignore lives in, "" for the root; pattern), as read at base_sha.
+    gitignore: tuple[tuple[str, str], ...] = ()
+    #: Fixed directory names: node_modules, .venv, and build output and caches named in the
+    #: EnvProfile.
+    fixed_dirs: frozenset[str] = frozenset()
+    #: Paths tracked at base_sha. Never excluded, even if a pattern matches them.
+    tracked: frozenset[str] = frozenset()
+
+
+def _check_export_path(path: str) -> str:
+    """Like `check_rel_path`, but `.git` is allowed: an export carries the whole workspace."""
+    if not path or path.startswith("/") or "\\" in path or "\x00" in path:
+        raise ValueError(f"not a workspace-relative POSIX path: {path!r}")
+    if any(p in ("", ".", "..") for p in path.split("/")):
+        raise ValueError(f"path has an empty, '.' or '..' component: {path!r}")
+    return path
+
+
+class ExportManifest(ArtifactModel):
+    """A workspace export (FR-21 pause, P2-04): every entry with its mode and hash, `.git`
+    included, links recorded as links. `restore` must reproduce exactly this digest."""
+
+    export_dir: str = Field(min_length=1)  # host directory holding the export
+    entries: dict[str, TreeEntry]
+
+    @field_validator("entries")
+    @classmethod
+    def _paths(cls, v: dict[str, TreeEntry]) -> dict[str, TreeEntry]:
+        for path in v:
+            _check_export_path(path)
+        return v
+
+    def digest(self) -> str:
+        canon = [[p, e.mode, e.sha256] for p, e in sorted(self.entries.items())]
+        return hashlib.sha256(json.dumps(canon, separators=(",", ":")).encode()).hexdigest()

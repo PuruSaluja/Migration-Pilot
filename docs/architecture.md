@@ -1,6 +1,6 @@
 # Architecture
 
-Status: §4–§6 and §8 are **real code since P1-07** (signatures below are summaries; the docstrings in the named modules are authoritative). The rest are **DRAFT signatures from P0-1** until P1-08.
+Status: §4–§11 are **real code** (P1-07: §4–§6, §8; P1-08: §7, §9–§11). Signatures below are summaries; the docstrings in the named modules are authoritative. §11's knowledge interfaces are explicitly **drafts** that Phases 2–5 may extend, recording the change here.
 P1-12 freezes them once `spec-reviewer` approves.
 After the freeze, changing an interface is a spec change (SPEC §18 rule 5).
 The signatures assume the proposals in `docs/decisions.md`, referenced below as A1, B2 and so on.
@@ -25,19 +25,25 @@ Data paths:
 ```
 src/mpilot/
   core/        types.py (enums, ids), clock.py, errors.py, tokens.py (B3 estimator), spawn.py (A10)
-  models/      domain.py (Pydantic, §12), artifacts.py (trees, diffs, FinalVerification, ApiPattern),
+  models/      domain.py (Pydantic, §12), artifacts.py (trees, diffs, blobs, FinalVerification,
+               ApiPattern, ExportManifest), state.py (Checkpoint, BudgetState, failure history),
                tables.py (SQLAlchemy), store.py (RunStore impl)
   config.py    settings + NFR-12 validation + config_hash
-  orchestrator/ states.py (pure transition table), machine.py, budget.py, checkpoint.py, loop.py
+  orchestrator/ base.py (interfaces), states.py (pure transition table), machine.py, budget.py,
+               checkpoint.py, loop.py
   agents/      runtime.py, sdk_runtime.py, messages_runtime.py, fake_runtime.py, cassette.py,
                router.py, roles/<role>.py, prompts/<role>.md, schemas.py
   tools/       base.py (Tool, ToolHost), files.py, search.py, exec.py, knowledge.py, mcp_server.py
   policy/      hooks.py (tool policies), gate.py (GateInput, PolicyCheck, evaluate_gate),
                integrity.py, diff_limits.py, secrets.py, licenses.py,
                allowed_files.py, branch.py, test_files.py (D2 classifier)
-  testing/     policy.py (E1 marker plugin), doubles.py (minimal Protocol doubles, mypy-checked)
-  sandbox/     driver.py (Docker), workspace.py (host-side safe FS, A1), network.py, proxy/, e2b.py
-  detect/  verify/  knowledge/  codemods/registry.yaml  vcs/  telemetry/  api/  web/
+  testing/     policy.py (E1 marker plugin), doubles.py (P1-07 doubles), infra_doubles.py (P1-08
+               doubles: in-memory sandbox, workspace, mirror, store, bus, budget), all mypy-checked
+  sandbox/     base.py (interfaces), driver.py (Docker), workspace.py (host-side safe FS, A1),
+               network.py, proxy/, e2b.py
+  vcs/         base.py (CredentialProvider, VcsAdapter, Mirror), github.py, mirror.py
+  verify/      base.py (Verifier)        knowledge/  base.py (drafts)
+  detect/  codemods/registry.yaml  telemetry/  api/  web/
 ```
 
 ## 3. Core enums and value types (`core/types.py`)
@@ -251,59 +257,78 @@ def run_post(policies, spec, output, ctx) -> BaseModel: ...   # TypeError if a p
 No GitHub tools and no commit, push or PR tools (§11.3 control 2, §9.1); a test asserts it. `explore` is a `DELEGATE` tool whose `run()` asks the orchestrator for an Explorer role call (§8.5).
 Test doubles: `InMemoryToolHost` (the invoke pipeline without the DB), `StaticTool`, `DenyToolsPolicy`.
 
-## 7. Sandbox and workspace (`sandbox/`)
+## 7. Sandbox, workspace and mirror (`sandbox/base.py`, `vcs/base.py`)
 
 ```python
-class ResourceLimits(BaseModel, frozen=True):
-    cpus: float = 4; memory_gb: int = 8; disk_gb: int = 20; pids: int = 1024   # D6, D7
+def sandbox_env_problems(env: Mapping[str, str]) -> list[str]: ...
+    # the floor under the driver's allowlist: credential-like keys (TOKEN, SECRET, PASS, API_KEY,
+    # *_KEY, AUTH, COOKIE, SESSION, ...), GITHUB_/GH_/ANTHROPIC_/CLAUDE_/MPILOT_/AWS_ variables and
+    # values with URL credentials (https://user:tok@host) never enter a container
 
+class ContainerRuntime(StrEnum): RUNSC; RUNC
+class RuntimeInfo(BaseModel, frozen=True):           # runc always carries a warning
+    runtime: ContainerRuntime; version: str; warnings: tuple[str, ...]
+class ResourceLimits(BaseModel, frozen=True):        # values from config `sandbox.*` (D6, D7)
+    cpus: float; memory_gb: int; disk_gb: int; pids: int
+class CacheMode(StrEnum): RUN; FRESH; HASH_VERIFIED  # RUN: rw in install, ro in work container
 class SandboxSpec(BaseModel, frozen=True):
-    image_digest: str; limits: ResourceLimits; workspace_host_path: Path
-    env: Mapping[str, str]             # allowlisted keys only; validated
-    from_commit: str | None = None     # build /workspace from this mirror commit (final verification)
-    final_cache: Literal["fresh", "hash_verified"] | None = None   # set only for final verification
-    # The driver mounts caches read-only in the work container and read-write in install containers (SPEC §9.3).
-    prefer_runtime: Literal["runsc", "runc"] = "runsc"
-
+    run_id: RunId; image: str                        # name@sha256:<digest>, validated
+    limits: ResourceLimits; workspace_host_path: Path
+    env: Mapping[str, str]                           # sandbox_env_problems() must be empty
+    cache: CacheMode; cache_key: str                 # final verification (from_commit) never uses RUN
+    from_commit: str | None; prefer_runtime: ContainerRuntime
 class ExecResult(BaseModel, frozen=True):
     exit_code: int; stdout_tail: str; stderr_tail: str; duration_s: float
-    truncated: bool; timed_out: bool
+    truncated: bool; timed_out: bool; killed_disk_limit: bool   # at most one kill reason
+class FreezeMechanism(StrEnum): PAUSE; KILL_ALL      # P2-03 records which works under runsc
 
-class Sandbox(Protocol):
-    id: str; runtime: Literal["runsc", "runc"]; warnings: list[str]
+class Sandbox(Protocol):                             # work container (no network) + install containers
+    id: str; runtime: ContainerRuntime; freeze_mechanism: FreezeMechanism; warnings: Sequence[str]
+    is_frozen: bool                                  # Workspace refuses unless True; exec refuses while True
     async def exec(self, argv: Sequence[str], *, network: NetworkMode, timeout_s: int,
-                   cwd: str = "/workspace", env: Mapping[str, str] | None = None) -> ExecResult:
-        """Run one command. NONE runs in the work container; REGISTRY runs in a short-lived
-        install container on the per-run internal network (A7). `env` is checked against the
-        same allowlist as SandboxSpec.env. Disk use is polled during the command; over the
-        limit kills it (D6). The work container is paused (frozen) whenever the host touches
-        the workspace (A1)."""
-    def frozen(self) -> AbstractContextManager[None]: ...   # docker pause/unpause around host file ops
-    async def export_workspace(self, dest: Path) -> ExportManifest: ...
-    async def destroy(self) -> None: ...
+                   cwd: str = "/workspace", env: Mapping[str, str] | None = None) -> ExecResult: ...
+        # NONE: work container. REGISTRY: a fresh install container on the run's internal network,
+        # destroyed and verified gone before returning (A7). Disk polled (D6). Never raises for a
+        # failing command.
+    def frozen(self) -> AbstractAsyncContextManager[None]: ...
+        # no install container exists; work container paused (or KILL_ALL); every Workspace call
+        # happens inside this (§9.5)
+    async def export_workspace(self, dest: Path) -> ExportManifest: ...   # never follows links, keeps .git
+    async def destroy(self) -> None: ...                                  # idempotent, also after errors
 
 class SandboxDriver(Protocol):
-    def detect_runtime(self) -> RuntimeInfo: ...             # runsc present and working? else runc + warning
-    async def create(self, spec: SandboxSpec) -> Sandbox: ...
-    async def restore(self, spec: SandboxSpec, manifest: ExportManifest) -> Sandbox: ...
+    def detect_runtime(self) -> RuntimeInfo: ...
+    async def create(self, spec: SandboxSpec) -> Sandbox: ...             # §9.3 hardening
+    async def restore(self, spec: SandboxSpec, manifest: ExportManifest, *,
+                      expected_digest: str) -> Sandbox: ...   # digest from the DB checkpoint
+    async def reap(self, run_id: RunId) -> int: ...  # remove a crashed run's containers and network
+                                                     # before any Workspace access on resume (§10.1)
 
-class Workspace(Protocol):                                   # host side, A1: openat2 RESOLVE_BENEATH
-    root: Path                                               # | NO_SYMLINKS | NO_MAGICLINKS + S_ISREG
-    def resolve(self, rel: str) -> Path: ...                 # raises PathEscapeError
-    def read_text(self, rel: str) -> str: ...
-    def write_text(self, rel: str, content: str) -> FileDiff: ...
+class Workspace(Protocol):                           # host side, A1: openat2 RESOLVE_BENEATH | NO_SYMLINKS
+    root: Path                                       # | NO_MAGICLINKS + S_ISREG; PathEscapeError otherwise
+    def read_text(self, rel: str, *, max_bytes: int) -> str: ...
+    def read_blob(self, rel: str, *, max_bytes: int) -> FileBlob: ...     # links as links, for the mirror
+    def write_text(self, rel: str, content: str, *, create: bool) -> FileDiff: ...  # create_file / str_replace
     def delete(self, rel: str) -> FileDiff: ...
     def list_dir(self, rel: str, depth: int) -> list[DirEntry]: ...
-    def walk_tree(self, exclude: ArtifactRules) -> TreeSnapshot: ...   # path → (mode, sha256); ignores .git, never follows links;
-                                                             # exclusions from mirror .gitignore@base_sha + fixed list only
-    def restore(self, snapshot_ref: str, mirror: Path) -> None: ...  # write tree from refs/mpilot/attempt/<n> (revert, crash)
+    def walk_tree(self, rules: ArtifactRules) -> TreeSnapshot: ...       # .git ignored, links never followed
+    def replace_tree(self, files: Mapping[str, FileBlob]) -> TreeSnapshot: ...   # revert, crash recovery
+    def iter_paths(self) -> Iterable[str]: ...
 
-class Mirror(Protocol):                                      # host-owned clone, never mounted (SPEC §9.5)
+class Mirror(Protocol):                              # vcs/base.py; runs/<id>/mirror, never mounted
     path: Path; base_sha: str
-    def record_snapshot(self, ref: str, tree: TreeSnapshot, ws: Workspace) -> None: ...  # refs/mpilot/phase/<n>, attempt/<n>
-    def build_phase_commits(self, refs: Sequence[str]) -> str: ...   # diffs between consecutive snapshots; returns head sha
-    def tree_equals(self, sha: str, tree: TreeSnapshot) -> bool: ...  # gate check (i)
+    def artifact_rules(self, fixed_dirs: frozenset[str]) -> ArtifactRules: ...   # .gitignore@base_sha
+    def snapshot(self, ref: str, ws: Workspace, rules: ArtifactRules) -> SnapshotInfo: ...
+    def resolve(self, ref: str) -> str: ...
+    def read_tree(self, ref: str) -> Mapping[str, FileBlob]: ...
+    def tree_reader(self, commit: str) -> TreeReader: ...                # for the gate (§8)
+    def diff(self, base: str, target: str) -> WorkspaceDiff: ...
+    def build_phase_commits(self, refs: Sequence[str]) -> str: ...      # one commit per phase
 ```
+
+Value types in `models/artifacts.py`: `FileBlob` (mode, data), `FileDiff` (path, kind, unified), `EntryType`, `DirEntry`, `ArtifactRules` (gitignore, fixed_dirs, tracked: tracked paths are never excluded), `ExportManifest` (export_dir, entries incl. `.git`; `digest()`).
+Snapshot refs: `phase_ref(RunStatus.BUMPED | CODEMODS_APPLIED)` → `refs/mpilot/phase/<name>`, `attempt_ref(n)` → `refs/mpilot/attempt/<n>` with a run-wide `n`.
+Test doubles: `FakeSandbox`, `FakeDriver`, `MemoryWorkspace`, `MemoryMirror`, `BlobTree` (`testing/infra_doubles.py`).
 
 ## 8. Gate checks (`policy/gate.py`, `policy/test_files.py`, `models/artifacts.py`)
 
@@ -373,95 +398,164 @@ class TestFileClassifier(Protocol):
 `Violation` is the §12 model in `models/domain.py`.
 Test doubles: `SetClassifier`, `DictTree`, `ConstantCheck`.
 
-## 9. VCS (`vcs/`)
+## 9. VCS (`vcs/base.py`)
 
 ```python
-class CredentialProvider(Protocol):                          # A10; PAT now, App in Phase 8
-    async def token_for(self, repo: RepoRef) -> SecretStr: ...  # refuses repos off the configured list;
-                                                                # App tokens minted for exactly one repo
+BRANCH_PREFIX = "mpilot/"; WIP_BRANCH_PREFIX = "mpilot/wip-"; NEEDS_HUMAN_LABEL = "needs-human"
+def is_mpilot_branch(name: str) -> bool: ...         # H1 local part: mpilot/<slug>, no nesting, no ..
+class RepoRef(BaseModel, frozen=True): owner: str; name: str; slug -> str
+class RepoInfo(BaseModel, frozen=True): default_branch: str; size_kb: int; license_spdx: str | None; private: bool
+class BranchStatus(BaseModel, frozen=True):          # A9; pushable -> not default/protected/ruleset
+    exists: bool; is_default: bool; protected: bool; ruleset_protected: bool
+class PrInfo(BaseModel, frozen=True): number; url; head_branch; base_branch; draft; created_at
+class BotPrInfo(BaseModel, frozen=True): number; url; head_branch; head_sha; base_branch; author_login; title
+class SnapshotInfo(BaseModel, frozen=True): ref: str; commit: str; tree_digest: str
 
-class VcsAdapter(Protocol):
-    async def repo_info(self, repo: RepoRef) -> RepoInfo: ...          # default_branch, size_kb, license
-    async def is_branch_protected(self, repo: RepoRef, branch: str) -> bool: ...   # A9
-    async def push_branch(self, repo: RepoRef, mirror: Path, branch: str) -> None:
-        """Refuses unless branch matches mpilot/* and is neither default nor protected (H1)."""
+class CredentialProvider(Protocol):                  # A10; PAT now, App in Phase 8
+    allowed_repos: frozenset[str]
+    async def token_for(self, repo: RepoRef) -> SecretStr: ...   # CredentialRefusedError off the list
+
+class VcsAdapter(Protocol):                          # no merge and no auto-merge method (H2, asserted)
+    async def repo_info(self, repo: RepoRef) -> RepoInfo: ...
+    async def branch_status(self, repo: RepoRef, branch: str) -> BranchStatus: ...
+    async def push_branch(self, repo: RepoRef, mirror: Mirror, *, branch: str, commit: str,
+                          verified: FinalVerification, report: IntegrityReport,
+                          verdict: CriticVerdict) -> None: ...
+        # the success push. PushRefusedError unless is_mpilot_branch(branch) (and not wip),
+        # branch_status(...).pushable, commit == verified.mirror_commit, report.passed, the
+        # Critic approved and all three from the same run, checked right before the push
+    async def push_wip_branch(self, repo: RepoRef, mirror: Mirror, *, branch: str, commit: str) -> None: ...
+        # FR-17 escalation branch: mpilot/wip-* only, H1 checks, a mirror commit; a PR on it only
+        # with --pr-on-failure, always labelled needs-human
     async def upsert_draft_pr(self, repo: RepoRef, *, branch: str, base: str, title: str,
-                              body: str, labels: Sequence[str]) -> PullRequest: ...   # idempotent (FR-16)
-    async def bot_pr(self, repo: RepoRef, number: int) -> BotPrInfo: ...   # FR-19, metadata only
+                              body: str, labels: Sequence[str]) -> PrInfo: ...   # idempotent, always draft;
+        # head must be mpilot/*, and a mpilot/wip-* head needs the needs-human label (FR-17)
+    async def bot_pr(self, repo: RepoRef, number: int) -> BotPrInfo: ...       # FR-19 metadata only
 ```
 
-The adapter has no merge method and no auto-merge method (H2).
+Test doubles: `AllowListCredentials`, `RecordingVcs`.
 
-## 10. Orchestrator, store, budgets, events
+## 10. Orchestrator, state, store, budgets, events (`orchestrator/base.py`, `models/state.py`)
 
 ```python
+class RunRequest(BaseModel, frozen=True):            # mpilot run / POST /runs, after config merge
+    repo: str; goal: str | None; package: str | None; from_version: str | None; to_version: str | None
+    replace: tuple[str, str] | None; ref: str | None    # branch, tag or pinned SHA (FR-2); validated so
+                                                     # it can never read as a git option
+    test_cmd: str | None; bot_pr_url: str | None
+    approve_plan: bool; open_pr: bool; pr_on_failure: bool; system: str; budgets: Budgets
+
+class RunEvent(StrEnum): ...                         # CLONED ... CANCELLED: the §7.4 event vocabulary
+
+class TransitionTable(Protocol):                     # pure §7.4 table (P3-04)
+    def next_state(self, state: RunStatus, event: RunEvent, *, paused_at: RunStatus | None = None) -> RunStatus: ...
+    def events_from(self, state: RunStatus) -> frozenset[RunEvent]: ...   # IllegalTransition otherwise
+    # pure over (state, event); `paused_at` only with RESUMED. Counted rules are the driver's, which
+    # picks the event: second gate failure or second Critic revise -> ESCALATE; --no-pr -> FINISHED
+
 class Orchestrator(Protocol):
     async def start(self, req: RunRequest) -> RunId: ...
     async def drive(self, run_id: RunId) -> RunStatus: ...     # until terminal, PAUSED_LIMIT or AWAITING_APPROVAL
     async def resume(self, run_id: RunId) -> RunStatus: ...    # B5 semantics
-    async def decide_plan(self, run_id: RunId, approve: bool, reason: str | None) -> None: ...
+    async def decide_plan(self, run_id: RunId, *, approve: bool, reason: str | None) -> None: ...
     async def cancel(self, run_id: RunId) -> None: ...
 
-def next_state(state: RunStatus, event: RunEvent) -> RunStatus: ...   # pure table; illegal ⇒ IllegalTransition
+class CallEstimate(BaseModel, frozen=True):          # B2: turn k costs prompt + (k-1)*tool + output
+    prompt_tokens: int; tool_output_per_turn: int; output_ceiling: int; requested_turns: int
+    def tokens_for(self, turns: int) -> int: ...
+    def max_turns_within(self, token_room: int, turn_room: int) -> int: ...   # 0 = refuse
 
-class BudgetManager(Protocol):
-    def precheck(self, est: CallEstimate) -> int: ...          # Σ-over-turns estimate (B2); returns clamped max_turns
-    def guard(self) -> BudgetGuard: ...                        # per-tool-call check that can end a running call
-    def record_attempt(self, step_id: StepId) -> None: ...     # NFR-3: raises at 6/step or 40/run
-    def record(self, usage: Usage, turns: int) -> None: ...
-    def check_time(self) -> None: ...                          # wall clock minus PAUSED_LIMIT time
-    def snapshot(self) -> Spent: ...
+class BudgetManager(Protocol):                       # never downgrades: refuses, stops or ends
+    def state(self) -> BudgetState: ...
+    def precheck(self, call_id: LLMCallId, est: CallEstimate) -> int: ...   # clamped, bound to the call;
+                                                               # nested calls (explore) kept apart
+    def guard(self, call_id: LLMCallId) -> BudgetGuard: ...    # §4; KeyError if never prechecked
+    def record_call(self, call_id: LLMCallId, usage: Usage, turns: int, api_equiv_usd: float) -> None: ...
+    def start_attempt(self, step_id: StepId) -> int: ...      # run-wide n; AttemptCapError at 6/40
+    def record_sandbox_seconds(self, seconds: float) -> None: ...
+    def pause(self) -> None: ...; def resume(self) -> None: ...; def check_time(self) -> None: ...
 
-class RunStore(Protocol):
-    def create_run(self, run: Run) -> None: ...
-    def get_run(self, run_id: RunId) -> Run: ...
-    def set_status(self, run_id: RunId, status: RunStatus, *, reason: str | None = None) -> None: ...
-    def append(self, row: ToolCall | LLMCall | RoutingDecision | TestResult | Attempt) -> None: ...
-    def checkpoint(self, cp: Checkpoint) -> None: ...          # after every tool call (NFR-4)
+AppendRow = ToolCall | LLMCall | RoutingDecision | TestResult | Attempt | IntegrityReport | CriticVerdict
+SingleRow = Baseline | Plan | PullRequest
+
+class RunStore(Protocol):                            # SQLite WAL (P1-10)
+    def create_run(self, run: Run) -> None: ...; def save_run(self, run: Run) -> None: ...
+    def get_run(self, run_id: RunId) -> Run: ...; def list_runs(self) -> Sequence[Run]: ...
+    def append(self, row: AppendRow) -> None: ...; def put(self, row: SingleRow) -> None: ...
+    def rows(self, run_id: RunId, kind: type[RowT]) -> Sequence[RowT]: ...
+    def checkpoint(self, cp: Checkpoint) -> None: ...          # refuses one that fails cp.covers(previous)
     def latest_checkpoint(self, run_id: RunId) -> Checkpoint | None: ...
+    def add_eval(self, result: EvalResult) -> None: ...; def evals(self, suite: str) -> Sequence[EvalResult]: ...
 
-class EventBus(Protocol):                                     # feeds `mpilot logs --follow` and SSE
-    def publish(self, ev: RunEventRecord) -> None: ...
-    def subscribe(self, run_id: RunId) -> AsyncIterator[RunEventRecord]: ...
+class EventKind(StrEnum): STATE_CHANGED; ROUTING_DECISION; LLM_CALL; TOOL_CALL; VERIFY; CHECKPOINT; APPROVAL_REQUESTED; LOG
+class RunEventRecord(BaseModel, frozen=True): run_id: RunId; seq: int; at: datetime; kind: EventKind; data: dict
+class EventBus(Protocol):
+    def publish(self, run_id: RunId, kind: EventKind, data: dict[str, Any]) -> RunEventRecord: ...   # assigns seq
+    def subscribe(self, run_id: RunId, *, after_seq: int = 0) -> AsyncIterator[RunEventRecord]: ...  # replay + live
 
-class Clock(Protocol):
-    def now(self) -> datetime: ...; def monotonic(self) -> float: ...
+# models/state.py
+def sticky_scope(step_id: StepId | None, state: RunStatus) -> str: ...   # "step/<id>" or "phase/<STATE>"
+class FailureHistoryEntry(BaseModel, frozen=True): signature: str; attempts: int; hypotheses_tried; outcome
+class InFlightCall(BaseModel, frozen=True): role_call_id; role; step_id; tool_calls_done; summary   # B5 restart
+class BudgetState(BaseModel, frozen=True):
+    spent: Spent; active_seconds: float; attempts_by_step: dict[StepId, int]; attempts_total: int
+    in_flight_turns: int; in_flight_tokens: int      # the running call's guard charges (crash-safe)
+class Checkpoint(BaseModel, frozen=True):            # after every tool call (NFR-4)
+    run_id: RunId; seq: int; at: datetime; status: RunStatus; paused_at_state: RunStatus | None
+    step_id: StepId | None; attempt_n: int | None
+    sticky: dict[str, StickyState]                   # sticky_scope -> state
+    budget: BudgetState; failure_history: tuple[FailureHistoryEntry, ...]
+    last_tool_call_id: ToolCallId | None; in_flight: InFlightCall | None
+    latest_snapshot_ref: str | None
+    export_dir: str | None; export_digest: str | None   # both required when paused
+    integrity_failures: int; critic_revisions: int   # §7.4 "once"; FR-15 at most one revise
+    def covers(self, previous: Checkpoint) -> list[str]: ...     # nothing may go backwards (B5): sticky
+        # flags, attempt counters, spent, active time, failure-history attempts and tried hypotheses
 ```
 
-## 11. Knowledge and verification (Phase 2–5, drafts)
+`Clock` is `core/clock.py` (P1-02).
+Test doubles: `DictTable`, `ScriptedOrchestrator`, `SimpleBudget`, `MemoryStore`, `MemoryBus`.
+
+## 11. Verification and knowledge (`verify/base.py`, `knowledge/base.py`)
 
 ```python
-class EnvDetector(Protocol):
-    def detect(self, repo: Path, overrides: DetectOverrides) -> EnvProfile: ...   # precedence SPEC §9.4
-
 class Verifier(Protocol):
-    async def verify(self, sb: Sandbox, env: EnvProfile, *, manifests_changed: bool,
-                     selector: Sequence[str] | None, full: bool) -> VerifyResult: ...
-    async def final_verify(self, driver: SandboxDriver, env: EnvProfile, mirror_commit: str) -> FinalVerification: ...
-        # SPEC §9.5: fresh sandbox from the mirror commit, fresh or hash-verified cache; install → build →
-        # typecheck → full suite, then one extra instrumented coverage run. Success, L0–L2 and every gate
-        # check judge only this.
+    async def baseline(self, sb: Sandbox, ws: Workspace, env: EnvProfile, classifier: TestFileClassifier,
+                       *, run_id: RunId, runs: int = 3) -> Baseline: ...      # FR-4, D4, D9
+    async def verify(self, sb: Sandbox, ws: Workspace, env: EnvProfile, *, run_id: RunId, attempt_id: AttemptId | None,
+                     manifests_changed: bool, selector: Sequence[str] | None, full: bool) -> VerifyResult: ...
+    async def final_verify(self, driver: SandboxDriver, mirror: Mirror, env: EnvProfile, *,
+                           run_id: RunId, commit: str, cache: CacheMode) -> FinalVerification: ...
+        # §9.5: fresh workspace from `commit`, fresh sandbox, FRESH or HASH_VERIFIED cache (RUN refused),
+        # whole pipeline uninstrumented, then one instrumented coverage run. Success, L0-L2 and every
+        # gate check judge only this.
 
-class FinalVerification(BaseModel, frozen=True):
-    mirror_commit: str; verify: VerifyResult; tests: TestResult
-    resolved_versions: dict[str, str]; coverage_pct: float | None; cache: Literal["fresh", "hash_verified"]
-
-def trim_log(raw: str, *, max_lines: int = 60) -> str: ...  # §10.3: strip ANSI/progress bars, head/tail, dedupe
-
+# knowledge/base.py: DRAFTS (Phases 2-5 may extend; record changes here)
+class DetectOverrides(BaseModel, frozen=True): install_cmd; build_cmd; typecheck_cmd; test_cmd; runtime_version
+class EnvDetector(Protocol):
+    def detect(self, tree: TreeReader, overrides: DetectOverrides) -> EnvProfile: ...   # reads the mirror
+class RegistryInfo(BaseModel, frozen=True): package; ecosystem; versions; latest_stable; yanked; deprecated
+                                            license_spdx; published_at; peer_deps
 class RegistryClient(Protocol):
     async def lookup(self, package: str, ecosystem: Ecosystem) -> RegistryInfo: ...
+class ChangelogChunk(BaseModel, frozen=True): text; source_url; version
+class CorpusStats(BaseModel, frozen=True): documents; chunks
 class ChangelogIndex(Protocol):
     async def build(self, package: str, ecosystem: Ecosystem, from_v: str, to_v: str) -> CorpusStats: ...
-    def search(self, query: str, package: str | None, top_k: int) -> list[ChangelogChunk]: ...
+    def search(self, query: str, package: str | None, top_k: int) -> list[ChangelogChunk]: ...   # top_k <= 8
 class RepoMapper(Protocol):
     def render(self, ws: Workspace, personalize: Sequence[str], budget_tokens: int) -> str: ...
+class UsageSite(BaseModel, frozen=True): path; line; symbol; snippet
+class UsageIndex(BaseModel, frozen=True): package; sites
 class UsageIndexer(Protocol):
     def index(self, ws: Workspace, package: str, ecosystem: Ecosystem) -> UsageIndex: ...
+class CodemodEntry(BaseModel, frozen=True): id; package; ecosystem; from_major; to_major; command; removed_apis
 class CodemodRegistry(Protocol):
     def lookup(self, package: str, from_major: int, to_major: int) -> list[CodemodEntry]: ...
-
-def failure_signature(stage: str, log_excerpt: str) -> str: ...   # FR-12; normalizes paths, lines, addresses
 ```
+
+Still to come as plain functions: `trim_log` and `failure_signature` (P3-12, FR-12, §10.3).
+Test doubles: `StaticVerifier`, `StaticDetector`, `StaticRegistry`, `ListChangelog`, `FixedMapper`, `StaticUsageIndexer`, `ListCodemods`.
 
 ## 12. Facts to record here at build time (SPEC Appendix A)
 

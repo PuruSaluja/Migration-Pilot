@@ -14,10 +14,15 @@ from pathlib import Path
 import pytest
 
 from mpilot.agents import router, runtime
-from mpilot.models import artifacts
+from mpilot.knowledge import base as kb
+from mpilot.models import artifacts, state
+from mpilot.orchestrator import base as ob
 from mpilot.policy import gate, hooks
 from mpilot.policy import test_files as tf
+from mpilot.sandbox import base as sb
 from mpilot.tools import base
+from mpilot.vcs import base as vb
+from mpilot.verify import base as verify
 
 DOC = (Path(__file__).resolve().parents[2] / "docs" / "architecture.md").read_text(encoding="utf-8")
 
@@ -31,6 +36,25 @@ PROTOCOLS: list[type] = [
     gate.PolicyCheck,
     gate.TreeReader,
     tf.TestFileClassifier,
+    # P1-08
+    sb.Sandbox,
+    sb.SandboxDriver,
+    sb.Workspace,
+    vb.Mirror,
+    vb.CredentialProvider,
+    vb.VcsAdapter,
+    ob.TransitionTable,
+    ob.Orchestrator,
+    ob.BudgetManager,
+    ob.RunStore,
+    ob.EventBus,
+    verify.Verifier,
+    kb.EnvDetector,
+    kb.RegistryClient,
+    kb.ChangelogIndex,
+    kb.RepoMapper,
+    kb.UsageIndexer,
+    kb.CodemodRegistry,
 ]
 VALUE_TYPES: list[type] = [
     runtime.ModelChoice,
@@ -62,6 +86,36 @@ VALUE_TYPES: list[type] = [
     artifacts.TestCounts,
     artifacts.FinalVerification,
     artifacts.ApiPattern,
+    # P1-08
+    sb.ContainerRuntime,
+    sb.RuntimeInfo,
+    sb.ResourceLimits,
+    sb.CacheMode,
+    sb.SandboxSpec,
+    sb.ExecResult,
+    sb.FreezeMechanism,
+    vb.RepoRef,
+    vb.RepoInfo,
+    vb.BranchStatus,
+    vb.PrInfo,
+    vb.BotPrInfo,
+    vb.SnapshotInfo,
+    ob.RunRequest,
+    ob.RunEvent,
+    ob.CallEstimate,
+    ob.EventKind,
+    ob.RunEventRecord,
+    state.FailureHistoryEntry,
+    state.InFlightCall,
+    state.BudgetState,
+    state.Checkpoint,
+    kb.DetectOverrides,
+    kb.RegistryInfo,
+    kb.ChangelogChunk,
+    kb.CorpusStats,
+    kb.UsageSite,
+    kb.UsageIndex,
+    kb.CodemodEntry,
 ]
 FUNCTIONS = [
     "check_result",
@@ -76,6 +130,9 @@ FUNCTIONS = [
     "sonnet_allowed_by_default",
     "is_trivial_edit",
     "minimal_sticky_after",
+    "sandbox_env_problems",
+    "is_mpilot_branch",
+    "sticky_scope",
 ]
 
 
@@ -128,6 +185,13 @@ FIELD_CHECKED: list[type] = [
     gate.GateInput,
     artifacts.WorkspaceDiff,
     artifacts.FinalVerification,
+    sb.SandboxSpec,
+    sb.ExecResult,
+    vb.BranchStatus,
+    ob.RunRequest,
+    ob.CallEstimate,
+    state.BudgetState,
+    state.Checkpoint,
 ]
 
 
@@ -138,3 +202,24 @@ def test_fields_are_documented(cls: type) -> None:
     fields = getattr(cls, "model_fields", None) or cls.__dataclass_fields__
     for name in fields:
         assert re.search(rf"\b{re.escape(name)}\s*:", DOC), f"{cls.__name__}.{name}"
+
+
+@pytest.mark.parametrize(
+    "cls",
+    [
+        artifacts.FileBlob,
+        artifacts.FileDiff,
+        artifacts.EntryType,
+        artifacts.DirEntry,
+        artifacts.ArtifactRules,
+        artifacts.ExportManifest,
+    ],
+    ids=lambda c: c.__name__,
+)
+def test_p1_08_artifact_types_are_named(cls: type) -> None:
+    assert f"`{cls.__name__}`" in DOC, cls.__name__
+
+
+def test_snapshot_ref_helpers_are_documented() -> None:
+    assert "phase_ref(" in DOC
+    assert "attempt_ref(" in DOC
