@@ -4,12 +4,13 @@
 Phase 1: Foundations
 
 ## Next task
-[SONNET] P1-02: `core/` enums, IDs, errors, exit codes, `Usage.cap_tokens`, token estimator, `Clock` (see the Phase 1 table). Run the session on Sonnet 5.5 at high effort.
+[SONNET] P1-03 is tagged [OPUS]: `core/spawn.py` explicit-env subprocess helper + token scrub at startup (see the Phase 1 table). Run the session on Opus 5.5 at high effort.
 
 ## In progress
 (none)
 
 ## Done
+- P1-02 (2026-11-20): `core/` = `types.py` (enums, ID NewTypes + generators, `ExitCode`, `exit_code_for`, `Usage.cap_tokens`), `tokens.py` (chars/3), `clock.py` (`Clock`, `SystemClock`, `FakeClock`), `errors.py`. 80 tests, all checks green.
 - P1-01 (2026-11-20): scaffold. `pyproject.toml` + `uv.lock` (full runtime/dev dependency list from `docs/requirements.md`), ruff/mypy strict/pytest config, E1 marker policy as a pytest plugin (`mpilot.testing.policy`, tested with pytester), `.pre-commit-config.yaml` (local hooks: ruff, mypy, gitleaks; pytest on pre-push; installed), `.gitignore`, JSON-lines logging (`mpilot.core.log`), Typer app with every §13.1 command stubbed (exit 1 + JSON log). 24 tests, all checks green.
 - Pre-P0 env prep: `docs/requirements.md` (host tools, Python deps, accounts), `scripts/setup-dev.sh` (Docker Engine + gVisor + gh + gitleaks), `scripts/check-env.sh` (read-only verifier). Host OS resolved as SPEC Q7.
 - Host setup run by owner 2026-11-19: native Docker Engine, gVisor verified (`docker run --runtime=runsc` reports kernel `4.19.0-gvisor`, systrap platform), gh and gitleaks installed. No runc fallback needed.
@@ -29,6 +30,7 @@ Phase 1: Foundations
 - 2026-11-19: SPEC v1.4 applies the approved P0 decisions and both review passes (see §20). Owner: no API key ever (Q9), WSL 12 GB (Q10), loopback `runs/`, background model pinned to Sonnet.
 
 - 2026-11-20 (P1-01): the E1 policy plugin lives in `src/mpilot/testing/policy.py` (so mypy --strict covers it) and is loaded with `-p` in `addopts`. A docker-marked test without Docker is reported as a setup ERROR (red), not a skip. `run` also takes `--from` and `--replace` (from FR-1; absent from the §13.1 usage line). Budget flags default to `None` so the §6 defaults live only in the config loader (P1-05). Ruff excludes `*.md` because it otherwise reformats code blocks in `docs/architecture.md`. `types-docker` added to dev deps for mypy.
+- 2026-11-20 (P1-02): §14.5 writes `BASELINE_RED/FLAKY` and `NO_PROGRESS/OSCILLATION`; each is ONE `FailureCategory` member named by its first token (matches §8.4's use of `NO_PROGRESS`), giving 17 members as docs/architecture.md says. A test parses SPEC §14.5 so the enum cannot drift. `exit_code_for` raises `ValueError` for non-terminal states other than PAUSED_LIMIT. Exit 130 is the constant `EXIT_INTERRUPTED`, not an `ExitCode` member. `Usage` gained `__add__` for budget accumulation.
 
 ## Task list
 
