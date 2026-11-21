@@ -52,6 +52,7 @@ Before pinning, re-check every version and API at build time (SPEC Appendix A).
 | `opentelemetry-api`, `opentelemetry-sdk`, `opentelemetry-exporter-otlp` | Tracing → Langfuse via OTLP (NFR-7) |
 | `pyyaml` | `codemods/registry.yaml`, `bench/suites/v1.yaml`, CI-config parsing |
 | `httpx` | Registry/changelog fetches (knowledge layer) |
+| `pathspec` | gitignore matching for the host walk's artifact rules (§9.5 Diff; P2-01) |
 
 **Dev**
 

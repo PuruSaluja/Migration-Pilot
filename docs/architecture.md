@@ -413,6 +413,7 @@ class Mirror(Protocol):                              # vcs/base.py; runs/<id>/mi
 Value types in `models/artifacts.py`: `FileBlob` (mode, data), `FileDiff` (path, kind, unified), `EntryType`, `DirEntry`, `ArtifactRules` (gitignore, fixed_dirs, tracked: tracked paths are never excluded), `ExportManifest` (export_dir, entries incl. `.git`; `digest()`).
 Snapshot refs: `phase_ref(RunStatus.BUMPED | CODEMODS_APPLIED)` → `refs/mpilot/phase/<name>`, `attempt_ref(n)` → `refs/mpilot/attempt/<n>` with a run-wide `n`: §12 `Attempt.n` is that same number (unique per run, enforced in the DB); `Attempt.n_in_step` is the per-step ordinal.
 Test doubles: `FakeSandbox`, `FakeDriver`, `MemoryWorkspace`, `MemoryMirror`, `BlobTree` (`testing/infra_doubles.py`).
+Implementation: `HostWorkspace(root, *, sandbox=None)` (`sandbox/workspace.py`, P2-01). Every name resolves through `openat2` with RESOLVE_BENEATH | NO_SYMLINKS | NO_MAGICLINKS | NO_XDEV, each file is type-checked through `O_PATH` before any I/O open, writes are temp file + rename, a `.git` component is refused in caller paths and skipped at every depth in walks, and `walk_tree` applies `ArtifactRules` with git's gitignore precedence (via `pathspec`). With a `sandbox`, every call refuses unless it is frozen.
 
 ## 8. Gate checks (`policy/gate.py`, `policy/test_files.py`, `models/artifacts.py`)
 
