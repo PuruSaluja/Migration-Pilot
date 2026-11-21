@@ -10,18 +10,35 @@ from __future__ import annotations
 import asyncio
 import os
 import time
-from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
 import docker
 import pytest
 from docker.errors import APIError, NotFound
+from docker_helpers import (  # noqa: F401  (fixtures are used by name)
+    NONE,
+    FaultyClient,
+    FaultyContainers,
+    Runner,
+    alive,
+    client,
+    driver,
+    image,
+    inspect,
+    make_spec,
+    run,
+    run_id,
+    sandbox,
+    started_at,
+    workspace,
+)
 
 from mpilot.core.errors import MpilotError
 from mpilot.core.types import NetworkMode, RunId, new_run_id
+from mpilot.models.artifacts import ExportManifest
 from mpilot.sandbox import base as sb
-from mpilot.sandbox.base import ContainerRuntime, ResourceLimits, SandboxSpec
+from mpilot.sandbox.base import ContainerRuntime
 from mpilot.sandbox.driver import (
     ALLOWED_EXEC_ENV,
     CONTAINER_HOME,
@@ -30,98 +47,6 @@ from mpilot.sandbox.driver import (
     DockerSandbox,
     env_problems,
 )
-
-IMAGE_REF = "busybox:1.36"
-NONE = NetworkMode.NONE
-
-
-@pytest.fixture(scope="session")
-def client() -> Iterator[docker.DockerClient]:
-    c = docker.from_env(timeout=120)
-    yield c
-    c.close()
-
-
-@pytest.fixture(scope="session")
-def image(client: docker.DockerClient) -> str:
-    digests = client.images.get(IMAGE_REF).attrs["RepoDigests"]
-    assert digests, f"{IMAGE_REF} has no digest: run scripts/setup-dev.sh"
-    return str(digests[0])
-
-
-@pytest.fixture
-def run_id(client: docker.DockerClient) -> Iterator[RunId]:
-    rid = new_run_id()
-    yield rid
-    for c in client.containers.list(all=True, filters={"label": f"{LABEL_RUN}={rid}"}):
-        c.remove(force=True, v=True)
-    for n in client.networks.list(filters={"label": f"{LABEL_RUN}={rid}"}):
-        n.remove()
-
-
-def make_spec(
-    rid: RunId,
-    image: str,
-    workspace: Path,
-    *,
-    pids: int = 64,
-    memory_gb: int = 1,
-    prefer: ContainerRuntime = ContainerRuntime.RUNSC,
-    env: dict[str, str] | None = None,
-) -> SandboxSpec:
-    return SandboxSpec(
-        run_id=rid,
-        image=image,
-        limits=ResourceLimits(cpus=1, memory_gb=memory_gb, disk_gb=1, pids=pids),
-        workspace_host_path=workspace,
-        env=env or {},
-        cache_key="lock-hash",
-        prefer_runtime=prefer,
-    )
-
-
-@pytest.fixture
-def workspace(tmp_path: Path) -> Path:
-    path = tmp_path / "workspace"
-    path.mkdir()
-    return path
-
-
-@pytest.fixture
-def driver(client: docker.DockerClient) -> DockerDriver:
-    return DockerDriver(client)
-
-
-def inspect(client: docker.DockerClient, sandbox: sb.Sandbox) -> dict[str, Any]:
-    assert isinstance(sandbox, DockerSandbox)
-    return dict(client.api.inspect_container(sandbox.container_id))
-
-
-@pytest.fixture
-def sandbox(
-    driver: DockerDriver, run_id: RunId, image: str, workspace: Path
-) -> Iterator[sb.Sandbox]:
-    box = asyncio.run(driver.create(make_spec(run_id, image, workspace)))
-    yield box
-    asyncio.run(box.destroy())
-
-
-class Runner:
-    """Run coroutines of one sandbox on one event loop (a sandbox is bound to its loop)."""
-
-    def __init__(self) -> None:
-        self.loop = asyncio.new_event_loop()
-
-    def __call__(self, coro: Any) -> Any:
-        return self.loop.run_until_complete(coro)
-
-
-@pytest.fixture
-def run() -> Iterator[Runner]:
-    r = Runner()
-    yield r
-    r.loop.close()
-
 
 # ---------------------------------------------------------------- pure helpers
 
@@ -317,37 +242,12 @@ def test_an_unregistered_runsc_falls_back_to_runc_and_records_a_warning(
         run(box.destroy())
 
 
-class _FaultyContainers:
-    """`client.containers` whose runsc creation fails, as a broken gVisor install does."""
-
-    def __init__(self, real: Any, log: list[str]) -> None:
-        self._real, self._log = real, log
-
-    def create(self, *args: Any, **kwargs: Any) -> Any:
-        self._log.append(str(kwargs.get("runtime")))
-        if kwargs.get("runtime") == "runsc":
-            raise APIError("OCI runtime create failed: runsc: fault injected")
-        return self._real.create(*args, **kwargs)
-
-    def __getattr__(self, name: str) -> Any:
-        return getattr(self._real, name)
-
-
-class _FaultyClient:
-    def __init__(self, real: docker.DockerClient, log: list[str]) -> None:
-        self._real = real
-        self.containers = _FaultyContainers(real.containers, log)
-
-    def __getattr__(self, name: str) -> Any:
-        return getattr(self._real, name)
-
-
 @pytest.mark.docker
 def test_a_runsc_that_fails_to_start_falls_back_to_runc_with_a_warning(
     client: docker.DockerClient, run_id: RunId, image: str, workspace: Path, run: Runner
 ) -> None:
     log: list[str] = []
-    driver = DockerDriver(_FaultyClient(client, log))  # type: ignore[arg-type]
+    driver = DockerDriver(FaultyClient(client, log))  # type: ignore[arg-type]
     box = run(driver.create(make_spec(run_id, image, workspace)))
     try:
         assert log == ["runsc", "runc"]
@@ -382,13 +282,13 @@ def test_asking_for_runc_is_allowed_but_always_warns(
 def test_a_failure_unrelated_to_the_runtime_is_not_retried_on_runc(
     client: docker.DockerClient, run_id: RunId, image: str, workspace: Path, run: Runner
 ) -> None:
-    class Broken(_FaultyContainers):
+    class Broken(FaultyContainers):
         def create(self, *args: Any, **kwargs: Any) -> Any:
             self._log.append(str(kwargs.get("runtime")))
             raise APIError("No such image: broken")
 
     log: list[str] = []
-    faulty = _FaultyClient(client, log)
+    faulty = FaultyClient(client, log)
     faulty.containers = Broken(client.containers, log)  # type: ignore[assignment]
     with pytest.raises(APIError):
         run(DockerDriver(faulty).create(make_spec(run_id, image, workspace)))  # type: ignore[arg-type]
@@ -492,59 +392,32 @@ def test_registry_mode_arrives_with_the_install_container(sandbox: sb.Sandbox, r
 # ---------------------------------------------------------------- timeouts
 
 
-STRAY_PIDS = (
-    'echo "$$ $PPID"; '
-    'for p in /proc/[0-9]*; do echo "${p#/proc/} $(tr "\\0" " " < $p/cmdline)"; done'
-)
-_RESIDENT = ("/sbin/docker-init", "sleep 2147483647")  # init and the container's main process
-
-
-def _alive(sandbox: sb.Sandbox, run: Runner) -> list[str]:
-    """Pids of processes in the container besides init, its main process and the probe (and
-    the probe's parent: gVisor runs an exec through one). Busybox runs a backgrounded `sleep`
-    inside a forked `sh`, so names and arguments tell nothing; only the pids are compared."""
-    res = run(sandbox.exec(["sh", "-c", STRAY_PIDS], network=NONE, timeout_s=30))
-    first, *rows = res.stdout_tail.splitlines()
-    own, parent = first.split()
-    stray = []
-    for row in rows:
-        pid, _, cmd = row.partition(" ")
-        if pid not in (own, parent) and not cmd.startswith(_RESIDENT):
-            stray.append(pid)
-    return stray
-
-
-def _started_at(client: docker.DockerClient, sandbox: sb.Sandbox) -> str:
-    """When the container last started: it changes if the container was restarted."""
-    return str(inspect(client, sandbox)["State"]["StartedAt"])
-
-
 @pytest.mark.docker
 def test_the_stray_process_check_sees_what_a_command_leaves_behind(
     sandbox: sb.Sandbox, run: Runner
 ) -> None:
-    """Positive control for every `_alive(...) == []` below."""
-    assert _alive(sandbox, run) == []
+    """Positive control for every `alive(...) == []` below."""
+    assert alive(sandbox, run) == []
     res = run(
         sandbox.exec(["sh", "-c", "sleep 300 & sleep 301 & echo left"], network=NONE, timeout_s=30)
     )
     assert res.stdout_tail == "left\n"
-    assert len(_alive(sandbox, run)) >= 2
+    assert len(alive(sandbox, run)) >= 2
 
 
 @pytest.mark.docker
 def test_a_timeout_kills_the_command_and_everything_it_started(
     client: docker.DockerClient, sandbox: sb.Sandbox, run: Runner
 ) -> None:
-    started = _started_at(client, sandbox)
+    started = started_at(client, sandbox)
     began = time.monotonic()
     res = run(sandbox.exec(["sh", "-c", "sleep 300 & sleep 301 & wait"], network=NONE, timeout_s=2))
     assert res.timed_out is True
     assert res.exit_code == -1
     assert res.killed_disk_limit is False
     assert time.monotonic() - began < 30
-    assert _alive(sandbox, run) == []
-    assert _started_at(client, sandbox) == started  # killed by tag, not by a restart
+    assert alive(sandbox, run) == []
+    assert started_at(client, sandbox) == started  # killed by tag, not by a restart
     # The container is still usable afterwards.
     assert run(sandbox.exec(["echo", "ok"], network=NONE, timeout_s=30)).stdout_tail == "ok\n"
 
@@ -554,7 +427,7 @@ def test_a_timeout_also_kills_processes_that_left_their_session(
     client: docker.DockerClient, sandbox: sb.Sandbox, run: Runner
 ) -> None:
     """`setsid` escapes process-group kills; the exec's environment tag does not."""
-    started = _started_at(client, sandbox)
+    started = started_at(client, sandbox)
     res = run(
         sandbox.exec(
             ["sh", "-c", "setsid sleep 302 & setsid sleep 303 & sleep 304"],
@@ -563,8 +436,8 @@ def test_a_timeout_also_kills_processes_that_left_their_session(
         )
     )
     assert res.timed_out is True
-    assert _alive(sandbox, run) == []
-    assert _started_at(client, sandbox) == started
+    assert alive(sandbox, run) == []
+    assert started_at(client, sandbox) == started
 
 
 @pytest.mark.docker
@@ -583,7 +456,7 @@ def test_a_timeout_keeps_the_output_written_so_far(sandbox: sb.Sandbox, run: Run
 def test_cancelling_an_exec_kills_the_command(
     client: docker.DockerClient, sandbox: sb.Sandbox, run: Runner
 ) -> None:
-    started = _started_at(client, sandbox)
+    started = started_at(client, sandbox)
 
     async def scenario() -> None:
         task = asyncio.create_task(sandbox.exec(["sleep", "305"], network=NONE, timeout_s=600))
@@ -593,8 +466,8 @@ def test_cancelling_an_exec_kills_the_command(
             await task
 
     run(scenario())
-    assert _alive(sandbox, run) == []
-    assert _started_at(client, sandbox) == started
+    assert alive(sandbox, run) == []
+    assert started_at(client, sandbox) == started
 
 
 @pytest.mark.docker
@@ -643,7 +516,7 @@ def test_the_memory_and_pids_limits_hold(
             assert "restarted" in res.stderr_tail
         after = run(box.exec(["echo", "alive"], network=NONE, timeout_s=60))
         assert (after.exit_code, after.stdout_tail) == (0, "alive\n")
-        assert _alive(box, run) == []  # the restart left no stray processes
+        assert alive(box, run) == []  # the restart left no stray processes
     finally:
         run(box.destroy())
 
@@ -655,11 +528,11 @@ def test_a_timeout_restarts_the_container_when_the_kill_command_cannot_finish(
     """The last resort: if the tag kill fails (here forced), restarting kills everything."""
     assert isinstance(sandbox, DockerSandbox)
     monkeypatch.setattr(sandbox, "_run_killer", lambda tag: False)
-    started = _started_at(client, sandbox)
+    started = started_at(client, sandbox)
     res = run(sandbox.exec(["sh", "-c", "sleep 308 & sleep 309 & wait"], network=NONE, timeout_s=2))
     assert res.timed_out is True
-    assert _started_at(client, sandbox) != started
-    assert _alive(sandbox, run) == []
+    assert started_at(client, sandbox) != started
+    assert alive(sandbox, run) == []
 
 
 @pytest.mark.docker
@@ -675,7 +548,7 @@ def test_a_timeout_still_kills_when_the_pids_limit_is_exhausted(
         script = "while :; do (sleep 306 &) 2>/dev/null; done"
         res = run(box.exec(["sh", "-c", script], network=NONE, timeout_s=3))
         assert res.timed_out is True
-        assert _alive(box, run) == []
+        assert alive(box, run) == []
     finally:
         run(box.destroy())
 
@@ -779,11 +652,12 @@ def test_reap_removes_a_running_container_that_a_command_is_using(
 
 
 @pytest.mark.docker
-def test_later_tasks_own_freeze_export_and_restore(
+def test_later_tasks_own_export_and_restore(
     driver: DockerDriver, sandbox: sb.Sandbox, run: Runner, tmp_path: Path
 ) -> None:
-    with pytest.raises(NotImplementedError, match="P2-03"):
-        sandbox.frozen()
     with pytest.raises(NotImplementedError, match="P2-04"):
         run(sandbox.export_workspace(tmp_path))
-    assert sandbox.freeze_mechanism in set(sb.FreezeMechanism)
+    spec = make_spec(new_run_id(), "x@sha256:" + "0" * 64, tmp_path)
+    manifest = ExportManifest(export_dir=str(tmp_path), entries={})
+    with pytest.raises(NotImplementedError, match="P2-04"):
+        run(driver.restore(spec, manifest, expected_digest=manifest.digest()))

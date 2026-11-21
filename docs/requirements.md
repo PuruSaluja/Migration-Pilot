@@ -24,6 +24,8 @@ Set up once with `bash scripts/setup-dev.sh`, then verify with `bash scripts/che
 | GitHub CLI `gh` | current | Phase 4 | Creating test repos/forks, checking PATs by hand. The product itself uses githubkit + a fine-grained PAT (§11.6), not `gh` | `setup-dev.sh` |
 | gitleaks | ≥ 8.18 | Phase 6 | Secret scanning of diffs, PR bodies, model inputs (§11.3) | `setup-dev.sh` |
 | Claude Code | current | Phase 0 | Build-time agent (this session) | present |
+| gcc (build-essential, static glibc) | Ubuntu default | Phase 2 | Tests only: builds a tiny static helper whose main thread exits while another runs, to prove the KILL_ALL freeze stops it (P2-03). Never compiles repo code | Ubuntu (present) |
+| busybox:1.36 image | pinned tag | Phase 2 | Tests only: stand-in sandbox image for the Docker tests until P2-07 builds the real images | `setup-dev.sh` |
 
 **Not needed on the host:** Node, npm/pnpm/yarn, Java, Maven, Gradle, ripgrep, the tree-sitter CLI and codemod tools.
 They all live in the sandbox images (`images/{node,python,jdk}/Dockerfile`, §9.3), because untrusted repo code never runs on the host (NFR-6).

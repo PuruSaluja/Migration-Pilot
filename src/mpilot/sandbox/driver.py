@@ -1,10 +1,10 @@
 """Docker driver for the sandbox: the work container's lifecycle and `exec` (SPEC §9.2, §9.3,
 NFR-6, NFR-10).
 
-Scope of P2-02. Built here: runtime detection (gVisor `runsc`, else `runc` with a recorded
+Scope (P2-02, P2-03). Built here: runtime detection (gVisor `runsc`, else `runc` with a recorded
 warning), `create` with the §9.3 hardening and limits, `exec` with output tails, timeouts and
-cancellation, `destroy`, `reap`. Owned by later tasks, and refused with `NotImplementedError`
-until then: `frozen()` (P2-03), `export_workspace`/`restore` (P2-04), disk polling (P2-05),
+cancellation, `frozen()` (P2-03), `destroy`, `reap`. Owned by later tasks, and refused with
+`NotImplementedError` until then: `export_workspace`/`restore` (P2-04), disk polling (P2-05),
 package-cache mounts (P2-07), `NetworkMode.REGISTRY` and the install container (P2-09).
 
 How the container behaves, learned on this host (WSL2, Docker 29, runsc, systrap platform):
@@ -28,16 +28,18 @@ import secrets
 import stat
 import threading
 import time
-from collections.abc import Mapping, Sequence
-from contextlib import AbstractAsyncContextManager
+from collections.abc import AsyncIterator, Awaitable, Mapping, Sequence
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
+from enum import StrEnum
 from pathlib import Path
-from typing import Any, Final
+from typing import Any, Final, TypeVar
 
 import docker
 from docker.errors import APIError, DockerException, ImageNotFound, NotFound
 from docker.types import LogConfig
 
 from mpilot.core import spawn
+from mpilot.core.errors import MpilotError
 from mpilot.core.types import NetworkMode, RunId
 from mpilot.models.artifacts import ExportManifest
 from mpilot.sandbox.base import (
@@ -51,9 +53,12 @@ from mpilot.sandbox.base import (
     sandbox_env_problems,
 )
 
+_T = TypeVar("_T")
+
 LABEL_RUN: Final = "mpilot.run_id"
 LABEL_ROLE: Final = "mpilot.role"
 ROLE_WORK: Final = "work"
+ROLE_INSTALL: Final = "install"  # P2-09's install containers carry this role
 
 #: The only variables a caller (or a `SandboxSpec`) may put in a container's environment
 #: (§9.3 Secrets: "Env vars are passed into the sandbox only from an allowlist, for every
@@ -107,6 +112,43 @@ while [ "$pass" -lt 6 ]; do
 done
 exit 1
 """.replace("$1_VAR", _EXEC_TAG_VAR)
+
+#: KILL_ALL freeze (§9.5): kill every process but init, the container's main process and this
+#: script, and repeat until no other pid exists at all. Zombies are killed too: a thread-group
+#: leader that exited alone shows as a zombie while its other threads run (gVisor does not
+#: even list those threads under it), and SIGKILL to it ends the whole group. A real zombie's
+#: parent is dead, so init reaps it and it disappears. Exit status 0 only if a pass found no
+#: pid outside the keep list. `sleep` is the only fork, and it has exited before each scan.
+_FREEZE_KILL_SCRIPT: Final = r"""
+keep=" 1 $1 $$ "
+pass=0
+while [ "$pass" -lt 100 ]; do
+  found=0
+  for d in /proc/[0-9]*; do
+    p=${d#/proc/}
+    case "$keep" in *" $p "*) continue;; esac
+    [ -d "$d" ] || continue
+    kill -KILL "$p" 2>/dev/null
+    found=1
+  done
+  [ "$found" = 0 ] && exit 0
+  pass=$((pass+1))
+  sleep 0.05
+done
+exit 1
+"""
+
+#: Prints the pid of every process whose parent is init. Run right after the container starts,
+#: before any command, the only one is the container's main process.
+_MAIN_PID_SCRIPT: Final = r"""
+for d in /proc/[0-9]*; do
+  p=${d#/proc/}
+  [ "$p" = "$$" ] && continue
+  while read -r k v rest; do
+    if [ "$k" = PPid: ]; then [ "$v" = 1 ] && echo "$p"; break; fi
+  done 2>/dev/null < "$d/status"
+done
+"""
 
 _RUNTIME_FAILURE = re.compile(r"runtime|runsc|gvisor|oci", re.I)
 
@@ -195,6 +237,7 @@ class DockerSandbox:
         container_id: str,
         *,
         name: str,
+        run_id: RunId,
         runtime: ContainerRuntime,
         warnings: Sequence[str],
         tail_bytes: int = DEFAULT_TAIL_BYTES,
@@ -202,10 +245,28 @@ class DockerSandbox:
         self._client = client
         self._container_id = container_id
         self._name = name
+        self._run_id = run_id
         self._runtime = runtime
         self._warnings = list(warnings)
         self._destroyed = False
+        self._state = _State.IDLE
+        self._active = 0  # commands in flight; frozen() refuses while any runs
+        #: Work that outlives the call that started it (the kill of a cancelled exec, a thaw
+        #: whose caller was cancelled). `exec` and `frozen()` wait for it before starting.
+        self._pending: set[asyncio.Task[Any]] = set()
+        self._mechanism = FreezeMechanism.PAUSE
+        self._main_pid = ""
         self.tail_bytes = tail_bytes
+
+    def _setup(self) -> None:
+        """Right after start: record the main process and find out how to freeze."""
+        self._main_pid = self._find_main_pid()
+        if not self._pause_works():
+            self._mechanism = FreezeMechanism.KILL_ALL
+            self._warnings.append(
+                f"docker pause does not work under {self._runtime.value}: freezing kills every "
+                "process in the container except init and its main process (§9.5)"
+            )
 
     # -- Sandbox protocol
 
@@ -223,19 +284,184 @@ class DockerSandbox:
 
     @property
     def freeze_mechanism(self) -> FreezeMechanism:
-        """Provisional: P2-03 decides and records which mechanism works under runsc."""
-        return FreezeMechanism.PAUSE
+        """PAUSE if `docker pause` worked when the container started (probed then), else
+        KILL_ALL, with a warning recorded."""
+        return self._mechanism
 
     @property
     def is_frozen(self) -> bool:
-        return False
+        """True only while every container process is stopped: never while freezing, thawing
+        or broken, so `Workspace` refuses in all of those."""
+        return self._state is _State.FROZEN
 
     @property
     def warnings(self) -> Sequence[str]:
         return tuple(self._warnings)
 
     def frozen(self) -> AbstractAsyncContextManager[None]:
-        raise NotImplementedError("Sandbox.frozen() is P2-03")
+        return self._frozen_cm()
+
+    @asynccontextmanager
+    async def _frozen_cm(self) -> AsyncIterator[None]:
+        """One state machine with `exec`: IDLE -> FREEZING -> FROZEN -> THAWING -> IDLE, or
+        BROKEN if the container could not be brought back. The state is claimed before the
+        first await, so no `exec` can start while freezing; `is_frozen` is true only once the
+        container is stopped and false from the first moment of thawing; the thaw runs as a
+        shielded task, so a cancelled caller can neither leave the flag set nor stop it."""
+        await self._drain_pending()
+        if self._destroyed:
+            raise RuntimeError("the sandbox was destroyed")
+        if self._state is _State.BROKEN:
+            raise RuntimeError(_BROKEN)
+        if self._state is not _State.IDLE:
+            raise RuntimeError("the sandbox is already frozen (or freezing or thawing)")
+        if self._active:
+            raise RuntimeError("cannot freeze while a command is running (§9.5)")
+        self._state = _State.FREEZING  # no await since the checks: nothing slipped in
+        step = self._background(asyncio.to_thread(self._enter_freeze))
+        try:
+            await asyncio.shield(step)
+        except BaseException:
+            # Cancelled or failed: the blocking step may still be running in its thread (a
+            # pause about to land). Recover only once it has finished, in one tracked task.
+            await asyncio.shield(self._background(self._recover_failed_freeze(step)))
+            raise
+        self._state = _State.FROZEN
+        try:
+            yield
+        finally:
+            self._state = _State.THAWING
+            await asyncio.shield(self._background(self._thaw()))
+
+    def _enter_freeze(self) -> None:
+        """The blocking part of freezing: no install container, then pause or kill-all."""
+        self._require_no_install_containers()
+        if self._mechanism is FreezeMechanism.PAUSE:
+            self._pause()
+        elif not self._kill_all():
+            raise RuntimeError(
+                "could not stop every process in the sandbox: refusing host file access"
+            )
+
+    def _background(self, work: Awaitable[_T]) -> asyncio.Task[_T]:
+        task = asyncio.ensure_future(work)
+        self._pending.add(task)
+        task.add_done_callback(self._pending.discard)
+        return task
+
+    async def _drain_pending(self) -> None:
+        while self._pending:
+            await asyncio.wait(set(self._pending))
+
+    async def _thaw(self) -> None:
+        if self._destroyed:
+            return  # destroyed inside frozen(): there is nothing left to resume
+        if self._mechanism is FreezeMechanism.KILL_ALL:
+            self._state = _State.IDLE  # nothing to resume: the processes are gone
+            return
+        try:
+            await asyncio.to_thread(self._unpause)
+        except BaseException:
+            self._state = _State.BROKEN
+            raise
+        self._state = _State.IDLE
+
+    async def _recover_failed_freeze(self, step: asyncio.Future[None]) -> None:
+        """Freezing failed or was cancelled part-way (a pause may have happened): wait for the
+        blocking step to finish, undo a pause, and go back to IDLE only if the container is
+        running and not paused."""
+        with contextlib.suppress(BaseException):
+            await step
+
+        def recover() -> bool:
+            api = self._client.api
+            with contextlib.suppress(APIError):
+                if api.inspect_container(self._container_id)["State"].get("Paused"):
+                    api.unpause(self._container_id)
+            try:
+                state = api.inspect_container(self._container_id)["State"]
+            except APIError:
+                return False
+            return bool(state.get("Running")) and not state.get("Paused")
+
+        ok = await asyncio.to_thread(recover)
+        self._state = _State.IDLE if ok else _State.BROKEN
+
+    def _require_no_install_containers(self) -> None:
+        flt = {"label": [f"{LABEL_RUN}={self._run_id}", f"{LABEL_ROLE}={ROLE_INSTALL}"]}
+        found = self._client.api.containers(all=True, filters=flt, quiet=True)
+        if found:
+            raise RuntimeError(
+                f"{len(found)} install container(s) of this run still exist: they must be gone "
+                "before the host touches the workspace (§9.5)"
+            )
+
+    def _pause(self) -> None:
+        api = self._client.api
+        api.pause(self._container_id)
+        if not api.inspect_container(self._container_id)["State"].get("Paused"):
+            with contextlib.suppress(APIError):
+                api.unpause(self._container_id)
+            raise RuntimeError("docker pause returned but the container is not paused")
+
+    def _unpause(self) -> None:
+        api = self._client.api
+        api.unpause(self._container_id)
+        state = api.inspect_container(self._container_id)["State"]
+        if state.get("Paused") or not state.get("Running"):
+            raise RuntimeError("the sandbox container is broken: it did not resume after unpause")
+
+    def _pause_works(self) -> bool:
+        api = self._client.api
+        try:
+            api.pause(self._container_id)
+            paused = bool(api.inspect_container(self._container_id)["State"].get("Paused"))
+        except APIError:
+            paused = False
+        with contextlib.suppress(APIError):
+            api.unpause(self._container_id)
+        state = api.inspect_container(self._container_id)["State"]
+        if state.get("Paused") or not state.get("Running"):
+            raise RuntimeError("the sandbox container is broken: it did not resume after pause")
+        return paused
+
+    def _find_main_pid(self) -> str:
+        pids = self._run_script(_MAIN_PID_SCRIPT, output=True).split()
+        if len(pids) != 1:
+            raise RuntimeError(f"expected one main process under init, found {pids}")
+        return pids[0]
+
+    def _kill_all(self) -> bool:
+        try:
+            self._run_script(_FREEZE_KILL_SCRIPT, self._main_pid, output=False)
+        except _ScriptFailedError:
+            return False
+        return True
+
+    def _run_script(self, script: str, *args: str, output: bool) -> str:
+        """Run a driver-owned shell script in the container and wait for it; raises
+        _ScriptFailedError unless it exits 0."""
+        api = self._client.api
+        created = api.exec_create(
+            self._container_id,
+            ["sh", "-c", script, "sh", *args],
+            stdout=output,
+            stderr=False,
+            stdin=False,
+            tty=False,
+        )
+        raw = api.exec_start(created["Id"], detach=False, stream=False)
+        deadline = time.monotonic() + _KILL_EXEC_TIMEOUT_S
+        while True:
+            info = api.exec_inspect(created["Id"])
+            if not info.get("Running") and info.get("ExitCode") is not None:
+                break
+            if time.monotonic() > deadline:
+                raise _ScriptFailedError("timed out")
+            time.sleep(0.05)
+        if info["ExitCode"] != 0:
+            raise _ScriptFailedError(f"exit code {info['ExitCode']}")
+        return raw.decode("utf-8", errors="replace") if isinstance(raw, bytes) else ""
 
     async def export_workspace(self, dest: Path) -> ExportManifest:
         raise NotImplementedError("Sandbox.export_workspace() is P2-04")
@@ -265,13 +491,37 @@ class DockerSandbox:
         if problems:
             raise ValueError("; ".join(problems))
 
-        result = await self._exec_once(list(argv), timeout_s, cwd, env or {})
+        # Wait out work still finishing (a thaw whose caller was cancelled, the kill of an
+        # exec that was cancelled twice), then check: no await from the check to the count.
+        await self._drain_pending()
+        self._require_exec_allowed()
+        self._active += 1
+        try:
+            return await self._exec_counted(list(argv), timeout_s, cwd, env or {})
+        finally:
+            self._active -= 1
+
+    def _require_exec_allowed(self) -> None:
+        if self._destroyed:
+            raise RuntimeError("the sandbox was destroyed")
+        if self._state is _State.BROKEN:
+            raise RuntimeError(_BROKEN)
+        if self._state is not _State.IDLE:
+            raise RuntimeError(
+                "exec while the sandbox is frozen (or freezing or thawing): the host is "
+                "touching files (§9.5)"
+            )
+
+    async def _exec_counted(
+        self, argv: list[str], timeout_s: int, cwd: str, env: Mapping[str, str]
+    ) -> ExecResult:
+        result = await self._exec_once(argv, timeout_s, cwd, env)
         if _never_started(result):
             # The command did not run: processes left behind by an earlier command have used
             # up the pids limit, so not even `exec` can fork. Restarting clears them, and a
             # command that never ran is safe to run again.
             await self._restart()
-            retry = await self._exec_once(list(argv), timeout_s, cwd, env or {})
+            retry = await self._exec_once(argv, timeout_s, cwd, env)
             note = "[mpilot] the container had reached its pids limit and was restarted first.\n"
             return retry.model_copy(update={"stderr_tail": note + retry.stderr_tail})
         return result
@@ -296,7 +546,9 @@ class DockerSandbox:
                 await self._kill(tag)
                 await asyncio.wait({stream.finished}, timeout=KILL_GRACE_S)
         except asyncio.CancelledError:
-            await asyncio.shield(self._kill(tag))
+            # `_kill` is a tracked task: a second cancellation cannot stop it half-way, and
+            # `_pending` keeps `frozen()` and the next `exec` waiting until it has finished.
+            await self._kill(tag)
             raise
         return await self._result(stream, began, timed_out=timed_out)
 
@@ -394,12 +646,18 @@ class DockerSandbox:
                 raise RuntimeError("the sandbox container is broken: it would not restart")
             if not api.inspect_container(self._container_id)["State"].get("Running"):
                 raise RuntimeError("the sandbox container is broken: it would not restart")
+            self._main_pid = self._find_main_pid()  # a restart starts a new main process
 
-        await asyncio.to_thread(restart)
+        # Tracked, so a cancelled caller can't let a later freeze overlap the kill + start.
+        await asyncio.shield(self._background(asyncio.to_thread(restart)))
 
     async def _kill(self, tag: str) -> None:
         """Kill every process the exec started. If the kill command cannot run or cannot
-        finish (the pids limit is used up), restart the container: that kills everything."""
+        finish (the pids limit is used up), restart the container: that kills everything.
+        Tracked in `_pending`, so no freeze can start until it has finished."""
+        await asyncio.shield(self._background(self._kill_now(tag)))
+
+    async def _kill_now(self, tag: str) -> None:
         try:
             clean = await asyncio.wait_for(
                 asyncio.to_thread(self._run_killer, tag), _KILL_EXEC_TIMEOUT_S
@@ -410,36 +668,26 @@ class DockerSandbox:
             await self._restart()
 
     def _run_killer(self, tag: str) -> bool:
-        api = self._client.api
-        created = api.exec_create(
-            self._container_id,
-            ["sh", "-c", _KILL_SCRIPT, "sh", tag],
-            stdout=False,
-            stderr=False,
-            stdin=False,
-            tty=False,
-        )
-        api.exec_start(created["Id"], detach=False, stream=False)
-        # With no output attached, `exec_start` can return before the command has finished.
-        deadline = time.monotonic() + _KILL_EXEC_TIMEOUT_S
-        while True:
-            info = api.exec_inspect(created["Id"])
-            if not info.get("Running") and info.get("ExitCode") is not None:
-                return bool(info["ExitCode"] == 0)
-            if time.monotonic() > deadline:
-                return False
-            time.sleep(0.05)
+        # `_run_script` waits on exec_inspect: with no output attached, `exec_start` can
+        # return before the command has finished.
+        try:
+            self._run_script(_KILL_SCRIPT, tag, output=False)
+        except _ScriptFailedError:
+            return False
+        return True
 
     # -- destroy
 
     async def destroy(self) -> None:
         if self._destroyed:
             return
+        # Off FROZEN first: forced removal may unpause the container on its way out, and
+        # `is_frozen` must never be true while a container process can run.
+        self._state = _State.BROKEN
 
         def remove() -> None:
             api = self._client.api
-            with contextlib.suppress(NotFound):
-                api.remove_container(self._container_id, v=True, force=True)
+            _force_remove(api, self._container_id)
             try:
                 api.inspect_container(self._container_id)
             except NotFound:
@@ -448,6 +696,24 @@ class DockerSandbox:
 
         await asyncio.to_thread(remove)
         self._destroyed = True
+
+
+class _State(StrEnum):
+    IDLE = "idle"
+    FREEZING = "freezing"
+    FROZEN = "frozen"
+    THAWING = "thawing"
+    BROKEN = "broken"
+
+
+_BROKEN: Final = (
+    "the sandbox is broken: it could not be resumed after a freeze; destroy it and restore "
+    "the workspace into a new one"
+)
+
+
+class _ScriptFailedError(MpilotError):
+    """A driver-owned script in the container did not exit 0 in time."""
 
 
 def _never_started(result: ExecResult) -> bool:
@@ -569,14 +835,22 @@ class DockerDriver:
             else:
                 container = self._start(spec, self._runc)
                 runtime = ContainerRuntime.RUNC
-        return DockerSandbox(
+        sandbox = DockerSandbox(
             self._client,
             str(container.id),
             name=str(container.name),
+            run_id=spec.run_id,
             runtime=runtime,
             warnings=warnings,
             tail_bytes=self._tail_bytes,
         )
+        try:
+            sandbox._setup()
+        except BaseException:
+            with contextlib.suppress(DockerException):
+                self._client.api.remove_container(str(container.id), v=True, force=True)
+            raise
+        return sandbox
 
     def _start(self, spec: SandboxSpec, runtime_name: str) -> Any:
         """Create and start the work container; on failure leave nothing behind."""
@@ -633,8 +907,7 @@ class DockerDriver:
         flt = {"label": [f"{LABEL_RUN}={run_id}"]}
         removed = 0
         for found in api.containers(all=True, filters=flt, quiet=True):
-            with contextlib.suppress(NotFound):
-                api.remove_container(found["Id"], v=True, force=True)
+            _force_remove(api, found["Id"])
             removed += 1
         for net in api.networks(filters=flt):
             with contextlib.suppress(NotFound):
@@ -644,6 +917,25 @@ class DockerDriver:
         if leftovers:
             raise RuntimeError(f"{len(leftovers)} object(s) of run {run_id} survived reap")
         return removed
+
+
+def _force_remove(api: Any, container_id: str) -> None:
+    """Remove a container whatever state it is in. A paused gVisor container can refuse a
+    forced removal ("PID ... is zombie and can not be killed"): unpause and kill it first."""
+    for attempt in range(3):
+        try:
+            api.remove_container(container_id, v=True, force=True)
+            return
+        except NotFound:
+            return
+        except APIError:
+            if attempt == 2:
+                raise
+        with contextlib.suppress(APIError):
+            api.unpause(container_id)
+        with contextlib.suppress(APIError):
+            api.kill(container_id)
+        time.sleep(_RESTART_PAUSE_S)
 
 
 def _check_workspace(path: Path) -> None:
