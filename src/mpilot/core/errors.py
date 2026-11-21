@@ -51,6 +51,12 @@ class PathEscapeError(MpilotError):
     is not a regular file or directory (§9.5, FR-10). The tool call is denied."""
 
 
+class ExportIntegrityError(MpilotError, ValueError):
+    """A workspace export does not match the digest the DB checkpoint recorded: the manifest was
+    swapped, or a file in the export was added, removed or changed (FR-21, §9.5). A `ValueError`
+    too, so callers that only care that the restore was refused can say so."""
+
+
 class IllegalTransition(MpilotError):  # noqa: N818  (the name the architecture uses)
     """The §7.4 state machine has no edge for this (state, event) pair."""
 

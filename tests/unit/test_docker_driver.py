@@ -36,7 +36,6 @@ from docker_helpers import (  # noqa: F401  (fixtures are used by name)
 
 from mpilot.core.errors import MpilotError
 from mpilot.core.types import NetworkMode, RunId, new_run_id
-from mpilot.models.artifacts import ExportManifest
 from mpilot.sandbox import base as sb
 from mpilot.sandbox.base import ContainerRuntime
 from mpilot.sandbox.driver import (
@@ -649,15 +648,3 @@ def test_reap_removes_a_running_container_that_a_command_is_using(
 
 
 # ---------------------------------------------------------------- not yet built
-
-
-@pytest.mark.docker
-def test_later_tasks_own_export_and_restore(
-    driver: DockerDriver, sandbox: sb.Sandbox, run: Runner, tmp_path: Path
-) -> None:
-    with pytest.raises(NotImplementedError, match="P2-04"):
-        run(sandbox.export_workspace(tmp_path))
-    spec = make_spec(new_run_id(), "x@sha256:" + "0" * 64, tmp_path)
-    manifest = ExportManifest(export_dir=str(tmp_path), entries={})
-    with pytest.raises(NotImplementedError, match="P2-04"):
-        run(driver.restore(spec, manifest, expected_digest=manifest.digest()))

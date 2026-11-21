@@ -42,12 +42,13 @@ from typing import Final
 
 import pathspec
 
-from mpilot.core.errors import PathEscapeError
+from mpilot.core.errors import ExportIntegrityError, PathEscapeError
 from mpilot.models.artifacts import (
     ArtifactRules,
     ChangeKind,
     DirEntry,
     EntryType,
+    ExportManifest,
     FileBlob,
     FileDiff,
     GitMode,
@@ -198,6 +199,18 @@ def _parts(rel: str) -> list[str]:
     if ".git" in parts:
         raise PathEscapeError(f"{rel!r}: the host never touches a .git directory (§9.5)")
     return parts
+
+
+def _open_directory(path: Path, what: str) -> int:
+    """An O_PATH descriptor of the directory at `path`; a symlink is refused, never followed."""
+    fd = os.open(path, _O_PATH_NOFOLLOW | os.O_CLOEXEC)
+    st = os.fstat(fd)
+    if not stat.S_ISDIR(st.st_mode):
+        os.close(fd)
+        if stat.S_ISLNK(st.st_mode):
+            raise PathEscapeError(f"{what} {path} is a symlink")
+        raise NotADirectoryError(errno.ENOTDIR, f"{what} is not a directory", str(path))
+    return fd
 
 
 def _check_walked(path: str) -> None:
@@ -392,16 +405,7 @@ class HostWorkspace:
 
     def _open_root(self) -> int:
         """A fresh O_PATH descriptor of the root, refused if the root became a symlink."""
-        fd = os.open(self._root, _O_PATH_NOFOLLOW | os.O_CLOEXEC)
-        st = os.fstat(fd)
-        if not stat.S_ISDIR(st.st_mode):
-            os.close(fd)
-            if stat.S_ISLNK(st.st_mode):
-                raise PathEscapeError(f"workspace root {self._root} is a symlink")
-            raise NotADirectoryError(
-                errno.ENOTDIR, "workspace root is not a directory", str(self._root)
-            )
-        return fd
+        return _open_directory(self._root, "workspace root")
 
     def _open_dir(self, root: int, parts: Sequence[str], *, create: bool) -> int:
         """O_PATH descriptor of the directory `parts` under `root`; with `create`, missing
@@ -709,8 +713,10 @@ class HostWorkspace:
         wanted: Mapping[str, FileBlob],
         wanted_dirs: set[str],
         keep: set[str],
+        *,
+        keep_git: bool = True,
     ) -> None:
-        names = [n for n in os.listdir(dirfd) if not (level == 1 and n == ".git")]
+        names = [n for n in os.listdir(dirfd) if not (keep_git and level == 1 and n == ".git")]
         if names and level > MAX_DEPTH:
             raise PathEscapeError(f"{prefix!r}: the tree is deeper than {MAX_DEPTH} levels")
         for name in names:
@@ -721,7 +727,9 @@ class HostWorkspace:
                     if path in wanted_dirs:
                         self._prune(child, path + "/", level + 1, wanted, wanted_dirs, keep)
                     else:
-                        self._prune(child, path + "/", level + 1, {}, set(), keep)
+                        self._prune(
+                            child, path + "/", level + 1, {}, set(), keep, keep_git=keep_git
+                        )
                 if path not in wanted_dirs:
                     os.rmdir(name, dir_fd=dirfd)
                 continue
@@ -747,6 +755,195 @@ class HostWorkspace:
         except (PermissionError, PathEscapeError):
             return False
         return data == blob.data
+
+    # -- export and restore (FR-21, §9.5)
+
+    def export_to(self, dest: Path) -> ExportManifest:
+        """Copy the whole workspace, `.git` included, to the host directory `dest` and return
+        the hash manifest (what `Sandbox.export_workspace` calls, while frozen).
+
+        Every read is contained like any other host access: links are copied as links and never
+        followed, and a FIFO, socket, device, setuid/setgid file, non-UTF-8 or backslash name,
+        or a tree deeper than MAX_DEPTH is refused (PathEscapeError), as is an unreadable
+        directory (PermissionError). Contents are hashed as they are copied, so the manifest
+        describes exactly the bytes in `dest`. Empty directories are kept; modes are reduced to
+        the exec bit as git does; modification times are kept for files. `dest` must be absent
+        or empty, outside the workspace, and not a symlink. If anything fails, what was copied
+        is removed again, so a partial export never looks complete."""
+        self._require_frozen()
+        _export_destination(dest, self._root)
+        entries: dict[str, TreeEntry] = {}
+        try:
+            with (
+                _contained("."),
+                _closing(self._open_root()) as root,
+                _closing(_openat2(root, ".", _O_LIST_DIR)) as src,
+                _closing(_open_dest(dest)) as dst,
+            ):
+                self._copy_dir(src, dst, "", 1, entries)
+        except BaseException:
+            self._wipe(dest)
+            raise
+        return ExportManifest(export_dir=str(dest), entries=entries)
+
+    def restore_from(self, manifest: ExportManifest, expected_digest: str) -> None:
+        """Rebuild this (empty) workspace from the export `manifest` describes.
+
+        Refused with ExportIntegrityError, before anything is written, if the manifest's digest
+        is not `expected_digest` (the digest the DB checkpoint holds), and again, with the
+        workspace emptied, if what the export directory really holds hashes to something
+        else: a file added, removed, changed, or swapped for a link. The export is read with
+        the same containment as a workspace: a planted link is copied as a link, never read
+        through. The workspace must be empty."""
+        self._require_frozen()
+        if manifest.digest() != expected_digest:
+            raise ExportIntegrityError(
+                "the export's manifest does not match the checkpoint's digest"
+            )
+        source = Path(manifest.export_dir)
+        if not source.is_absolute():
+            raise ValueError(f"export directory must be an absolute path: {source}")
+        with (
+            _contained("."),
+            _closing(self._open_root()) as root,
+            _closing(_openat2(root, ".", _O_LIST_DIR)) as top,
+        ):
+            if os.listdir(top):
+                raise ValueError(f"workspace is not empty: {self._root}")
+        entries: dict[str, TreeEntry] = {}
+        try:
+            with (
+                _contained("."),
+                _closing(self._open_root()) as root,
+                _closing(_open_directory(source, "export directory")) as src_path,
+                _closing(_openat2(src_path, ".", _O_LIST_DIR)) as src,
+                _closing(_openat2(root, ".", _O_LIST_DIR)) as dst,
+            ):
+                self._copy_dir(src, dst, "", 1, entries)
+            actual = ExportManifest(export_dir=str(source), entries=entries).digest()
+            if actual != expected_digest:
+                raise ExportIntegrityError(
+                    "the export does not match the checkpoint's digest: a file was added, "
+                    "removed or changed since it was written"
+                )
+        except BaseException:
+            self._wipe(self._root)  # nothing half-restored is left behind
+            raise
+
+    def clear(self) -> None:
+        """Remove everything in the workspace, `.git` included, without following any link
+        (undoes a failed restore). Needs a frozen sandbox if one is bound."""
+        self._require_frozen()
+        self._wipe(self._root)
+
+    def _wipe(self, directory: Path) -> None:
+        """Remove everything under `directory`, `.git` included, without following any link."""
+        with (
+            suppress(OSError, PathEscapeError),
+            _closing(_open_directory(directory, "wipe")) as path_fd,
+            _closing(_openat2(path_fd, ".", _O_LIST_DIR)) as top,
+        ):
+            self._prune(top, "", 1, {}, set(), set(), keep_git=False)
+
+    def _copy_dir(
+        self, src: int, dst: int, prefix: str, level: int, entries: dict[str, TreeEntry]
+    ) -> None:
+        """Copy the directory `src` into the (writable, host-owned) directory `dst`, recording
+        each file and link in `entries`. `src` is read only through `openat2`."""
+        names = sorted(os.listdir(src))
+        if names and level > MAX_DEPTH:
+            raise PathEscapeError(f"{prefix!r}: the tree is deeper than {MAX_DEPTH} levels")
+        for name in names:
+            path = prefix + name
+            _check_export_name(path)
+            st = os.stat(name, dir_fd=src, follow_symlinks=False)
+            if stat.S_ISDIR(st.st_mode):
+                os.mkdir(name, 0o755, dir_fd=dst)
+                with (
+                    _closing(self._open_listing(src, name)) as child_src,
+                    _closing(_open_child_directory(dst, name)) as child_dst,
+                ):
+                    self._copy_dir(child_src, child_dst, path + "/", level + 1, entries)
+            elif stat.S_ISLNK(st.st_mode):
+                target = os.readlink(os.fsencode(name), dir_fd=src)
+                if not _same_inode(st, os.stat(name, dir_fd=src, follow_symlinks=False)):
+                    raise PathEscapeError(f"{path!r} was replaced while it was being copied")
+                os.symlink(target, os.fsencode(name), dir_fd=dst)
+                entries[path] = TreeEntry(mode=_LINK, sha256=hashlib.sha256(target).hexdigest())
+            else:
+                entries[path] = self._copy_file(src, dst, name, path)
+
+    def _copy_file(self, src: int, dst: int, name: str, path: str) -> TreeEntry:
+        fd, opened = self._open_regular(src, name, path, os.O_RDONLY)
+        with _closing(fd):
+            out = os.open(
+                name,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+                0o600,
+                dir_fd=dst,
+            )
+            digest = hashlib.sha256()
+            with _closing(out):
+                while chunk := os.read(fd, _CHUNK):
+                    digest.update(chunk)
+                    _write_all(out, chunk)
+                mode = _git_mode(opened)
+                os.fchmod(out, 0o755 if mode == "100755" else 0o644)
+                os.utime(out, ns=(opened.st_atime_ns, opened.st_mtime_ns))
+        return TreeEntry(mode=mode, sha256=digest.hexdigest())
+
+
+# ---------------------------------------------------------------- export and restore (FR-21)
+
+
+def _check_export_name(path: str) -> None:
+    """A name found while copying a whole workspace must be one the manifest can hold. `.git`
+    is allowed here (an export carries the whole workspace), unlike in `_check_walked`."""
+    try:
+        path.encode("utf-8")
+    except UnicodeEncodeError:
+        raise PathEscapeError(f"{path!r}: file name is not UTF-8") from None
+    if "\\" in path or "\x00" in path:
+        raise PathEscapeError(f"{path!r}: file name holds a backslash or NUL")
+
+
+def _export_destination(dest: Path, root: Path) -> None:
+    """Refuse a destination that is not a safe, empty, host-owned place. Created (mode 0700)
+    when its parent exists."""
+    if not dest.is_absolute():
+        raise ValueError(f"export destination must be an absolute path: {dest}")
+    try:
+        mode = dest.lstat().st_mode
+    except FileNotFoundError:
+        _refuse_overlap(dest, root)
+        dest.parent.lstat()  # FileNotFoundError if the parent is missing too
+        dest.mkdir(mode=0o700)
+        return
+    if stat.S_ISLNK(mode):
+        raise ValueError(f"export destination is a symlink: {dest}")
+    if not stat.S_ISDIR(mode):
+        raise NotADirectoryError(errno.ENOTDIR, "export destination is not a directory", str(dest))
+    _refuse_overlap(dest, root)
+    if any(dest.iterdir()):
+        raise ValueError(f"export destination is not empty: {dest}")
+
+
+def _refuse_overlap(dest: Path, root: Path) -> None:
+    real_dest, real_root = dest.resolve(), root.resolve()
+    if real_dest == real_root or real_dest.is_relative_to(real_root):
+        raise ValueError(f"export destination {dest} is inside the workspace {root}")
+    if real_root.is_relative_to(real_dest):
+        raise ValueError(f"export destination {dest} contains the workspace {root}")
+
+
+def _open_dest(dest: Path) -> int:
+    """O_RDONLY descriptor of the export destination; a symlink is refused, never followed."""
+    return os.open(dest, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+
+
+def _open_child_directory(dirfd: int, name: str) -> int:
+    """O_RDONLY descriptor of a directory this process just created in a host-owned tree."""
+    return os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=dirfd)
 
 
 def _always(path: str) -> bool:

@@ -3,8 +3,8 @@ NFR-6, NFR-10).
 
 Scope (P2-02, P2-03). Built here: runtime detection (gVisor `runsc`, else `runc` with a recorded
 warning), `create` with the §9.3 hardening and limits, `exec` with output tails, timeouts and
-cancellation, `frozen()` (P2-03), `destroy`, `reap`. Owned by later tasks, and refused with
-`NotImplementedError` until then: `export_workspace`/`restore` (P2-04), disk polling (P2-05),
+cancellation, `frozen()` (P2-03), `export_workspace`/`restore` (P2-04), `destroy`, `reap`.
+Owned by later tasks, and refused with `NotImplementedError` until then: disk polling (P2-05),
 package-cache mounts (P2-07), `NetworkMode.REGISTRY` and the install container (P2-09).
 
 How the container behaves, learned on this host (WSL2, Docker 29, runsc, systrap platform):
@@ -39,7 +39,7 @@ from docker.errors import APIError, DockerException, ImageNotFound, NotFound
 from docker.types import LogConfig
 
 from mpilot.core import spawn
-from mpilot.core.errors import MpilotError
+from mpilot.core.errors import ExportIntegrityError, MpilotError
 from mpilot.core.types import NetworkMode, RunId
 from mpilot.models.artifacts import ExportManifest
 from mpilot.sandbox.base import (
@@ -52,6 +52,7 @@ from mpilot.sandbox.base import (
     SandboxSpec,
     sandbox_env_problems,
 )
+from mpilot.sandbox.workspace import HostWorkspace
 
 _T = TypeVar("_T")
 
@@ -238,6 +239,7 @@ class DockerSandbox:
         *,
         name: str,
         run_id: RunId,
+        workspace: Path,
         runtime: ContainerRuntime,
         warnings: Sequence[str],
         tail_bytes: int = DEFAULT_TAIL_BYTES,
@@ -246,6 +248,7 @@ class DockerSandbox:
         self._container_id = container_id
         self._name = name
         self._run_id = run_id
+        self._workspace = workspace
         self._runtime = runtime
         self._warnings = list(warnings)
         self._destroyed = False
@@ -464,7 +467,25 @@ class DockerSandbox:
         return raw.decode("utf-8", errors="replace") if isinstance(raw, bytes) else ""
 
     async def export_workspace(self, dest: Path) -> ExportManifest:
-        raise NotImplementedError("Sandbox.export_workspace() is P2-04")
+        """Copy the workspace, `.git` included, to `dest` and return the hash manifest (FR-21).
+
+        Runs frozen, so the copy describes one instant; the sandbox is running again when this
+        returns, and stays frozen until the copy thread has finished even if the caller is
+        cancelled. After `destroy()` no container mounts the workspace (it was verified gone),
+        so it is read without a freeze: that is how the workspace of a sandbox that could not
+        be resumed (BROKEN) is saved, by destroying it first."""
+        if self._destroyed:
+            return await asyncio.to_thread(HostWorkspace(self._workspace).export_to, dest)
+        if self._state is _State.BROKEN:
+            raise RuntimeError(f"{_BROKEN}; to save its workspace, destroy it and export after")
+        async with self.frozen():
+            work = self._background(
+                asyncio.to_thread(HostWorkspace(self._workspace, sandbox=self).export_to, dest)
+            )
+            try:
+                return await asyncio.shield(work)
+            finally:
+                await _finished(work)  # never thaw under a thread that is still copying
 
     # -- exec
 
@@ -716,6 +737,16 @@ class _ScriptFailedError(MpilotError):
     """A driver-owned script in the container did not exit 0 in time."""
 
 
+async def _finished(task: asyncio.Task[Any]) -> None:
+    """Wait for `task` to end even if this coroutine is cancelled meanwhile, and mark its
+    exception as retrieved (the caller already has it, or is being cancelled)."""
+    while not task.done():
+        with contextlib.suppress(asyncio.CancelledError):
+            await asyncio.wait({task})
+    if not task.cancelled():
+        task.exception()
+
+
 def _never_started(result: ExecResult) -> bool:
     """Docker reports "the process could not be created" as exit code 128 plus the runtime's
     message as output; only the resource-exhaustion kind is worth a restart and a retry."""
@@ -798,11 +829,11 @@ class DockerDriver:
     async def create(self, spec: SandboxSpec) -> Sandbox:
         return await asyncio.to_thread(self._create, spec)
 
-    def _create(self, spec: SandboxSpec) -> DockerSandbox:
+    def _preflight(self, spec: SandboxSpec) -> None:
+        """What can be refused before touching the workspace: the env and the image."""
         problems = env_problems(spec.env)
         if problems:
             raise ValueError("; ".join(problems))
-        _check_workspace(spec.workspace_host_path)
         try:
             self._client.images.get(spec.image)
         except ImageNotFound:
@@ -810,6 +841,10 @@ class DockerDriver:
                 f"image {spec.image} is not available locally "
                 "(build it with the image script, P2-07)"
             ) from None
+
+    def _create(self, spec: SandboxSpec) -> DockerSandbox:
+        self._preflight(spec)
+        _check_workspace(spec.workspace_host_path)
 
         warnings: list[str] = []
         if spec.prefer_runtime is ContainerRuntime.RUNC:
@@ -840,6 +875,7 @@ class DockerDriver:
             str(container.id),
             name=str(container.name),
             run_id=spec.run_id,
+            workspace=spec.workspace_host_path,
             runtime=runtime,
             warnings=warnings,
             tail_bytes=self._tail_bytes,
@@ -897,7 +933,40 @@ class DockerDriver:
     async def restore(
         self, spec: SandboxSpec, manifest: ExportManifest, *, expected_digest: str
     ) -> Sandbox:
-        raise NotImplementedError("SandboxDriver.restore() is P2-04")
+        return await asyncio.to_thread(self._restore, spec, manifest, expected_digest)
+
+    def _restore(
+        self, spec: SandboxSpec, manifest: ExportManifest, expected_digest: str
+    ) -> DockerSandbox:
+        """Rebuild `spec.workspace_host_path` (absent or empty; never merged into) from the
+        export, refusing unless it hashes to the checkpoint's `expected_digest`, then start a
+        sandbox on it. Nothing is written if the digest, env or image is refused; if the
+        copy or the start fails, the workspace is emptied again so a retry is possible."""
+        if manifest.digest() != expected_digest:
+            raise ExportIntegrityError(
+                "the export's manifest does not match the checkpoint's digest"
+            )
+        self._preflight(spec)
+        path = spec.workspace_host_path
+        if not path.is_absolute():
+            raise ValueError(f"workspace path must be absolute: {path}")
+        try:
+            mode = path.lstat().st_mode
+        except FileNotFoundError:
+            path.parent.lstat()  # FileNotFoundError if the parent is missing too
+            path.mkdir(mode=0o755)
+        else:
+            if stat.S_ISLNK(mode):
+                raise ValueError(f"workspace path is a symlink: {path}")
+            if not stat.S_ISDIR(mode):
+                raise NotADirectoryError(f"workspace path is not a directory: {path}")
+        workspace = HostWorkspace(path)
+        workspace.restore_from(manifest, expected_digest)  # empties it again if it fails
+        try:
+            return self._create(spec)
+        except BaseException:
+            workspace.clear()
+            raise
 
     async def reap(self, run_id: RunId) -> int:
         return await asyncio.to_thread(self._reap, run_id)
