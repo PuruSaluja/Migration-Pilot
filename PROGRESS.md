@@ -4,12 +4,16 @@
 Phase 2: Sandbox, detection, baseline (Phase 1 gate passed 2026-11-20)
 
 ## Next task
-[SONNET-MED] P2-06: base Dockerfiles `images/{node,python}/Dockerfile` for node 18/20/22 and python 3.9-3.13 (jdk comes in Phase 10): non-root user, ripgrep, git, tree-sitter CLI, FROM lines pinned by digest (SPEC §9.3). Files only; reviewed in P2-07. This task is tagged [SONNET-MED]: run the session on **Sonnet 5.5 at medium effort** (logic-free); escalate to [SONNET] after one red session or as soon as it needs program logic, and log it here. Digests must be looked up from the registry at build time (SPEC Appendix A), never invented; the pinned `busybox:1.36` is only the Docker tests' stand-in.
+[SONNET] P2-07: image build script + `images/digests.lock` + image smoke tests; package caches under `runs/cache/` keyed by lockfile hash, read-only in the work container, read-write only in install containers (SPEC §9.3, NFR-5). Also review the P2-06 Dockerfiles (see the tree-sitter glibc note under Decisions) and settle which package managers/codemod tools the images carry.
 
 ## In progress
 (none)
 
 ## Done
+- P2-06 (2026-11-21): base Dockerfiles `images/node/Dockerfile` (node 18/20/22) and `images/python/Dockerfile` (python 3.9-3.13), files only. Ran on Sonnet 5.5 (effort not visible to me; owner to confirm it was medium); no escalation.
+  - Each file has one pinned `FROM <image>@sha256:<index digest> AS base-<ver>` per version and a shared `final` stage selected by `--build-arg NODE_MAJOR` / `PYTHON_VERSION`. Base = `*-bookworm-slim`. The 8 digests were looked up from the registry on 2026-11-21 with `docker buildx imagetools inspect <tag>`, none typed from memory.
+  - `final` stage: ripgrep and git from apt, tree-sitter CLI v0.27.2 as a GitHub release binary checked against its published SHA-256 (amd64 + arm64), non-root user `sandbox` (uid/gid 1000 by build arg; the node image's own `node` user is removed), `/workspace` owned by it, no `curl` left in the image.
+  - Checked by building node 18, node 22, python 3.9 and python 3.13 and running `id`, `rg`, `git`, `tree-sitter` with `--network none`: all run as uid 1000, exit 0. The other 6 versions share the same final stage but were not built. Test images removed afterwards. 1717 green (no Python changed).
 - P2-05 (2026-11-21): disk limits (D6). `HostWorkspace.disk_usage_bytes` (`sandbox/workspace.py`), the monitor in `DockerSandbox.exec` (`sandbox/driver.py`), the `/tmp` cap and `check_runs_filesystem` (new `sandbox/disk.py`). 20 host tests (`tests/unit/test_disk_limits.py`) and 13 real-Docker tests (`tests/unit/test_sandbox_disk.py`). Ran on Sonnet 5.5 (effort not visible to me; owner to confirm it was high); no escalation.
   - A command writing past the limit is killed (by tag, container untouched) with `ExecResult.killed_disk_limit`, exit -1 and a note on stderr; shown with a 1 GiB `dd` against a 20 MiB limit, many tiny files, and a write into `.git`. `/tmp` is a size-capped tmpfs: filling it fails with "No space left on device" under both runsc and runc and the container keeps running. This host's `runs/` (`/dev/loop2`, ext4, 48.9 GB) passes `check_runs_filesystem`.
   - Mutation checks (each turned a test red): monitor never trips, flag not reported, measurement failure fails open, too-deep tree ignored, monitor task left running, poll before the first interval, limit ignoring the spec, file sizes instead of blocks (first attempt was too weak, redone), `.git` skipped, hard links counted twice, no `/tmp` cap, memory-blind cap.
@@ -81,6 +85,12 @@ Phase 2: Sandbox, detection, baseline (Phase 1 gate passed 2026-11-20)
 - For P8-01 and any new entrypoint: call `load_github_token()` first thing, as the CLI callback does.
 
 ## Decisions (short notes; formal ones go in SPEC.md §20)
+- 2026-11-21 (P2-06), for P2-07 and the owner:
+  - **tree-sitter v0.27.2 prints `weak version GLIBC_2.39 not found` on stderr at every start on bookworm (glibc 2.36)**, but runs and exits 0. Harmless for now; noisy if agent tools capture stderr. Options for P2-07: build it from source in a builder stage, pin an older release built against older glibc, or move the bases to trixie. That is a design choice, so not made here.
+  - apt packages (git, ripgrep) are not version-pinned: the bases are digest-pinned but apt resolves to whatever bookworm holds at build time. NFR-5 is met by recording tool versions in `digests.lock` (P2-07), as §9.3 says.
+  - The images carry no package managers beyond what the bases ship (npm/corepack; pip) and no codemod tools yet. §9.3 lists codemod tools and G2 lists Poetry/uv/PDM; P2-07 should decide where they are installed (image build vs install container).
+  - Node 18 is end-of-life but `node:18-bookworm-slim` still resolves; the spec lists it, so it stays.
+
 - 2026-11-19: SPEC v1.3 adds strict effort routing (medium/high) for both the product router (§8.4) and the build process (§16.1 [SONNET-MED] tag, §16.2 subagent efforts). See §20.
 - 2026-11-19: Dev host = Ubuntu 24.04 / WSL2, native Docker Engine + gVisor, not Docker Desktop (SPEC Q7, §20). No requirements.txt: Python deps go in pyproject.toml + uv.lock in Phase 1; the planned list is in docs/requirements.md.
 - 2026-11-19: Test repos and forks live on the owner's personal GitHub account `PuruSaluja` (SPEC Q8).
