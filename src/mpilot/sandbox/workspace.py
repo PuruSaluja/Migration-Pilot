@@ -756,6 +756,59 @@ class HostWorkspace:
             return False
         return data == blob.data
 
+    # -- disk use (D6)
+
+    def disk_usage_bytes(self, limit: int | None = None) -> int:
+        """Disk space the workspace occupies: the allocated blocks of every file, link and
+        directory, `.git` and dependency directories included, hard links once, like `du`.
+
+        Metadata only (§9.3): `lstat` through the contained walker, so no regular file is ever
+        opened (a FIFO or device could block), no link is followed, and no freeze is needed.
+        Files that vanish mid-walk and directories that are unreadable or were swapped for a
+        link are skipped. With `limit`, the walk stops once the total passes it and returns
+        that partial total (over the limit is all the caller needs). A tree deeper than
+        MAX_DEPTH raises PathEscapeError."""
+        with (
+            _contained("."),
+            _closing(self._open_root()) as root,
+            _closing(_openat2(root, ".", _O_LIST_DIR)) as top,
+        ):
+            total = os.fstat(top).st_blocks * 512
+            seen: set[tuple[int, int]] = set()
+            return total + self._du(top, 1, limit, seen, total)
+
+    def _du(
+        self, dirfd: int, level: int, limit: int | None, seen: set[tuple[int, int]], base: int
+    ) -> int:
+        """Allocated bytes under `dirfd`; `base` is what the caller already counted."""
+        if level > MAX_DEPTH:
+            raise PathEscapeError(f"the tree is deeper than {MAX_DEPTH} levels")
+        total = 0
+        with os.scandir(dirfd) as entries:
+            for entry in entries:
+                try:
+                    st = entry.stat(follow_symlinks=False)
+                except FileNotFoundError:
+                    continue
+                if stat.S_ISDIR(st.st_mode):
+                    total += st.st_blocks * 512
+                    try:
+                        child = _openat2(dirfd, entry.name, _O_LIST_DIR)
+                    except OSError:
+                        continue  # unreadable, vanished, or swapped for a link: not followed
+                    with _closing(child):
+                        total += self._du(child, level + 1, limit, seen, base + total)
+                else:
+                    if st.st_nlink > 1 and not stat.S_ISLNK(st.st_mode):
+                        key = (st.st_dev, st.st_ino)
+                        if key in seen:
+                            continue
+                        seen.add(key)
+                    total += st.st_blocks * 512
+                if limit is not None and base + total > limit:
+                    return total
+        return total
+
     # -- export and restore (FR-21, §9.5)
 
     def export_to(self, dest: Path) -> ExportManifest:

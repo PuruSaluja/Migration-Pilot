@@ -3,9 +3,10 @@ NFR-6, NFR-10).
 
 Scope (P2-02, P2-03). Built here: runtime detection (gVisor `runsc`, else `runc` with a recorded
 warning), `create` with the §9.3 hardening and limits, `exec` with output tails, timeouts and
-cancellation, `frozen()` (P2-03), `export_workspace`/`restore` (P2-04), `destroy`, `reap`.
-Owned by later tasks, and refused with `NotImplementedError` until then: disk polling (P2-05),
-package-cache mounts (P2-07), `NetworkMode.REGISTRY` and the install container (P2-09).
+cancellation, `frozen()` (P2-03), `export_workspace`/`restore` (P2-04), the disk limit and the
+`/tmp` cap (P2-05, D6), `destroy`, `reap`. Owned by later tasks, and refused with
+`NotImplementedError` until then: package-cache mounts (P2-07), `NetworkMode.REGISTRY` and the
+install container (P2-09).
 
 How the container behaves, learned on this host (WSL2, Docker 29, runsc, systrap platform):
 - Under gVisor a command that passes the memory or pids limit does not fail alone: the whole
@@ -39,7 +40,7 @@ from docker.errors import APIError, DockerException, ImageNotFound, NotFound
 from docker.types import LogConfig
 
 from mpilot.core import spawn
-from mpilot.core.errors import ExportIntegrityError, MpilotError
+from mpilot.core.errors import ExportIntegrityError, MpilotError, PathEscapeError
 from mpilot.core.types import NetworkMode, RunId
 from mpilot.models.artifacts import ExportManifest
 from mpilot.sandbox.base import (
@@ -52,6 +53,7 @@ from mpilot.sandbox.base import (
     SandboxSpec,
     sandbox_env_problems,
 )
+from mpilot.sandbox.disk import DISK_POLL_S, GIB, human_bytes, tmpfs_options
 from mpilot.sandbox.workspace import HostWorkspace
 
 _T = TypeVar("_T")
@@ -82,8 +84,6 @@ ALLOWED_EXEC_ENV: Final = frozenset(
 
 #: Every container's `HOME`: the root is read-only, so the home directory is the tmpfs.
 CONTAINER_HOME: Final = "/tmp"  # noqa: S108  (inside the container, not a host path)
-#: Provisional /tmp cap. The spec gives no number; P2-05 owns the final value and its test.
-TMPFS_TMP: Final = "rw,nosuid,nodev,size=1g,mode=1777"
 _EXEC_TAG_VAR: Final = "_MPILOT_EXEC"
 #: Per-stream bytes of command output kept (the end of it), unless the sandbox is given another.
 DEFAULT_TAIL_BYTES: Final = 32 * 1024
@@ -91,6 +91,8 @@ DEFAULT_TAIL_BYTES: Final = 32 * 1024
 KILL_GRACE_S: Final = 5.0
 _KILL_EXEC_TIMEOUT_S: Final = 20.0
 _RESTART_PAUSE_S: Final = 0.2
+#: Consecutive failed disk measurements after which the command is stopped.
+_DISK_MEASURE_FAILURES: Final = 3
 _SETTLE_S: Final = 3.0
 #: Exit codes that may mean the sandbox itself died: gVisor's lost-sandbox 128, and SIGKILL.
 _DEATH_CODES: Final = frozenset({128, 137})
@@ -240,6 +242,7 @@ class DockerSandbox:
         name: str,
         run_id: RunId,
         workspace: Path,
+        disk_limit_bytes: int,
         runtime: ContainerRuntime,
         warnings: Sequence[str],
         tail_bytes: int = DEFAULT_TAIL_BYTES,
@@ -249,6 +252,11 @@ class DockerSandbox:
         self._name = name
         self._run_id = run_id
         self._workspace = workspace
+        #: D6: the workspace is measured while a command runs and the command is killed past
+        #: this many bytes. Public so tests (and a later cache mount, P2-07) can adjust them.
+        self.disk_limit_bytes = disk_limit_bytes
+        self.disk_poll_s = DISK_POLL_S
+        self._meter = HostWorkspace(workspace)  # metadata only: no sandbox bound, no freeze
         self._runtime = runtime
         self._warnings = list(warnings)
         self._destroyed = False
@@ -560,10 +568,20 @@ class DockerSandbox:
             return await self._exec_refused(exc, began)
 
         timed_out = False
+        disk_note: str | None = None
+        disk_watch = asyncio.ensure_future(self._disk_watch())
         try:
-            await asyncio.wait({stream.finished}, timeout=timeout_s)
-            if not stream.finished.done():
-                timed_out = True
+            watched: set[asyncio.Future[Any]] = {stream.finished, disk_watch}
+            done, _ = await asyncio.wait(
+                watched,
+                timeout=timeout_s,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if stream.finished not in done:
+                if disk_watch in done:
+                    disk_note = disk_watch.result()
+                else:
+                    timed_out = True
                 await self._kill(tag)
                 await asyncio.wait({stream.finished}, timeout=KILL_GRACE_S)
         except asyncio.CancelledError:
@@ -571,7 +589,41 @@ class DockerSandbox:
             # `_pending` keeps `frozen()` and the next `exec` waiting until it has finished.
             await self._kill(tag)
             raise
-        return await self._result(stream, began, timed_out=timed_out)
+        finally:
+            disk_watch.cancel()
+            await _finished(disk_watch)
+        return await self._result(stream, began, timed_out=timed_out, disk_note=disk_note)
+
+    # -- disk limit (D6)
+
+    def _disk_usage(self) -> int:
+        return self._meter.disk_usage_bytes(self.disk_limit_bytes)
+
+    async def _disk_watch(self) -> str:
+        """Poll the workspace while a command runs; return why, once it must be stopped. Never
+        returns while all is well (the caller cancels it when the command ends). A workspace
+        that cannot be measured stops the command too: running unguarded is the worse failure."""
+        failures = 0
+        while True:
+            await asyncio.sleep(self.disk_poll_s)
+            try:
+                used = await asyncio.to_thread(self._disk_usage)
+            except PathEscapeError as exc:
+                return f"the workspace tree cannot be measured ({exc}); treated as over the limit"
+            except OSError:
+                failures += 1
+                if failures >= _DISK_MEASURE_FAILURES:
+                    return (
+                        "the workspace's disk use could not be measured; the command was "
+                        "stopped rather than run unguarded"
+                    )
+                continue
+            failures = 0
+            if used > self.disk_limit_bytes:
+                return (
+                    f"the workspace passed the disk limit of {human_bytes(self.disk_limit_bytes)} "
+                    f"({human_bytes(used)} used)"
+                )
 
     def _exec_create(self, argv: list[str], environment: list[str], cwd: str) -> str:
         created = self._client.api.exec_create(
@@ -598,11 +650,18 @@ class DockerSandbox:
             began,
         )
 
-    async def _result(self, stream: _Stream, began: float, *, timed_out: bool) -> ExecResult:
+    async def _result(
+        self, stream: _Stream, began: float, *, timed_out: bool, disk_note: str | None
+    ) -> ExecResult:
         out, err = stream.stdout, stream.stderr
         truncated = out.truncated or err.truncated
         if timed_out:
             return _result(-1, out.text(), err.text(), began, truncated, timed_out=True)
+        if disk_note is not None:
+            note = f"[mpilot] the command was killed: {disk_note}.\n"
+            return _result(
+                -1, out.text(), err.text() + note, began, truncated, killed_disk_limit=True
+            )
         if stream.error is not None and not isinstance(stream.error, APIError | OSError):
             raise stream.error
         if stream.exit_code is not None and await self._is_running(settle=stream.exit_code):
@@ -766,6 +825,7 @@ def _result(
     truncated: bool = False,
     *,
     timed_out: bool = False,
+    killed_disk_limit: bool = False,
 ) -> ExecResult:
     return ExecResult(
         exit_code=exit_code,
@@ -774,6 +834,7 @@ def _result(
         duration_s=max(0.0, time.monotonic() - began),
         truncated=truncated,
         timed_out=timed_out,
+        killed_disk_limit=killed_disk_limit,
     )
 
 
@@ -876,6 +937,7 @@ class DockerDriver:
             name=str(container.name),
             run_id=spec.run_id,
             workspace=spec.workspace_host_path,
+            disk_limit_bytes=spec.limits.disk_gb * GIB,
             runtime=runtime,
             warnings=warnings,
             tail_bytes=self._tail_bytes,
@@ -912,7 +974,7 @@ class DockerDriver:
                 mem_limit=limits.memory_gb * 1024**3,
                 memswap_limit=limits.memory_gb * 1024**3,
                 nano_cpus=int(limits.cpus * 1_000_000_000),
-                tmpfs={CONTAINER_HOME: TMPFS_TMP},
+                tmpfs={CONTAINER_HOME: tmpfs_options(limits.memory_gb)},
                 volumes={str(spec.workspace_host_path): {"bind": "/workspace", "mode": "rw"}},
                 log_config=LogConfig(type=LogConfig.types.NONE),
                 labels={LABEL_RUN: str(spec.run_id), LABEL_ROLE: ROLE_WORK},
