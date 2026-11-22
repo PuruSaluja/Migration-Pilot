@@ -745,12 +745,16 @@ def test_a_peer_that_stops_reading_cannot_hold_connections_past_the_cap() -> Non
             for n in range(1, 5):  # twice the cap
                 socks.append(await stalled_client(r.port, "pypi.org"))
                 for _ in range(400):
-                    if r.kinds().count("end") >= n and r.proxy.active == 0 and not r.proxy._tasks:
+                    if (
+                        r.kinds().count("end") >= n
+                        and r.proxy.active == 0
+                        and not r.proxy.connections
+                    ):
                         break
                     await asyncio.sleep(0.01)
                 assert r.kinds().count("end") >= n, r.events
                 assert r.proxy.active == 0, "a stalled tunnel still holds a slot"
-                assert not r.proxy._tasks, "a stalled tunnel's task is still alive"
+                assert not r.proxy.connections, "a stalled tunnel's task is still alive"
             assert Deny.BUSY.value not in r.denials()
             # and the proxy still serves an ordinary client
             _, writer, status = await request(r.port, connect_head("pypi.org:443"))

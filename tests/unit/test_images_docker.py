@@ -20,11 +20,12 @@ from mpilot.sandbox.images import ImageSpec
 pytestmark = pytest.mark.docker
 
 SPECS = im.image_specs()
+SANDBOX = [s for s in SPECS if s.ecosystem.sandbox]  # the proxy image is tested in test_network*
 LOCK = im.read_lock(im.default_images_dir() / im.LOCK_FILENAME)
 
 
-def _ids() -> list[str]:
-    return [s.key for s in SPECS]
+def _ids(specs: list[ImageSpec] = SPECS) -> list[str]:
+    return [s.key for s in specs]
 
 
 @pytest.fixture(scope="module")
@@ -68,7 +69,7 @@ def test_every_image_builds_and_carries_the_locked_tools(
     assert tools == LOCK.images[spec.key].tools
 
 
-@pytest.mark.parametrize("spec", SPECS, ids=_ids())
+@pytest.mark.parametrize("spec", SANDBOX, ids=_ids(SANDBOX))
 def test_rg_and_git_run_offline_as_the_sandbox_user_with_a_quiet_stderr(
     spec: ImageSpec,
     built: dict[str, ImageSpec],
@@ -87,7 +88,7 @@ def test_rg_and_git_run_offline_as_the_sandbox_user_with_a_quiet_stderr(
         assert err == "", (spec.key, argv, err)
 
 
-@pytest.mark.parametrize("spec", SPECS, ids=_ids())
+@pytest.mark.parametrize("spec", SANDBOX, ids=_ids(SANDBOX))
 def test_rg_and_git_do_real_work(
     spec: ImageSpec,
     built: dict[str, ImageSpec],
@@ -104,7 +105,7 @@ def test_rg_and_git_do_real_work(
     assert out.split() == ["1", "1"]
 
 
-@pytest.mark.parametrize("spec", SPECS, ids=_ids())
+@pytest.mark.parametrize("spec", SANDBOX, ids=_ids(SANDBOX))
 def test_the_image_does_not_run_as_root_even_without_a_user_flag(
     spec: ImageSpec,
     built: dict[str, ImageSpec],
@@ -117,7 +118,7 @@ def test_the_image_does_not_run_as_root_even_without_a_user_flag(
     assert (code, out.split()) == (0, ["sandbox", "1000", "1000"])
 
 
-@pytest.mark.parametrize("spec", SPECS, ids=_ids())
+@pytest.mark.parametrize("spec", SANDBOX, ids=_ids(SANDBOX))
 def test_curl_and_the_apt_lists_are_gone(
     spec: ImageSpec,
     built: dict[str, ImageSpec],

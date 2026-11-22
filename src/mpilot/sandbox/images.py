@@ -64,9 +64,16 @@ class ImageError(MpilotError):
 class Ecosystem:
     name: str
     versions: tuple[str, ...]
-    build_arg: str  # the Dockerfile ARG that selects the version
+    build_arg: str | None  # the Dockerfile ARG that selects the version (None: one version)
     #: `(label, shell command)` pairs run inside the image; the first output line is recorded.
     tools: tuple[tuple[str, str], ...]
+    #: A sandbox image (work and install containers), or infrastructure (the egress proxy).
+    sandbox: bool = True
+    #: Build context relative to the repository root; default: the Dockerfile's directory.
+    context: str | None = None
+    #: Files of the context that go into the image; their hashes are part of the lock, so a
+    #: changed source with a stale image fails `check`.
+    sources: tuple[str, ...] = ()
 
 
 _COMMON_TOOLS: Final[tuple[tuple[str, str], ...]] = (
@@ -103,6 +110,15 @@ ECOSYSTEMS: Final[tuple[Ecosystem, ...]] = (
             *_COMMON_TOOLS,
         ),
     ),
+    Ecosystem(
+        "proxy",
+        ("1",),
+        None,
+        (("python", "python --version"),),
+        sandbox=False,
+        context="src/mpilot/sandbox/proxy",
+        sources=("server.py",),
+    ),
 )
 
 
@@ -117,10 +133,18 @@ class ImageSpec:
     context: Path
     base: str  # "node:20-bookworm-slim@sha256:..."
     dockerfile_sha256: str
+    dockerfile: Path | None = None  # default: context / "Dockerfile"
+    sources_sha256: tuple[tuple[str, str], ...] = ()
 
     @property
     def build_args(self) -> dict[str, str]:
+        if self.ecosystem.build_arg is None:
+            return {}
         return {self.ecosystem.build_arg: self.version}
+
+    @property
+    def dockerfile_path(self) -> Path:
+        return self.dockerfile or self.context / "Dockerfile"
 
 
 def default_images_dir() -> Path:
@@ -132,14 +156,19 @@ def image_specs(images_dir: Path | None = None) -> list[ImageSpec]:
     """Read every image's pin from its Dockerfile. Raises `ImageError` on a base that isn't
     pinned by digest, a missing or duplicate stage, or a Dockerfile that is not there."""
     root = images_dir or default_images_dir()
+    repo = default_images_dir().parent
     specs: list[ImageSpec] = []
     for eco in ECOSYSTEMS:
-        context = root / eco.name
-        path = context / "Dockerfile"
+        path = root / eco.name / "Dockerfile"
+        context = repo / eco.context if eco.context else path.parent
         try:
             raw = path.read_bytes()
+            sources = tuple(
+                (name, hashlib.sha256((context / name).read_bytes()).hexdigest())
+                for name in eco.sources
+            )
         except OSError as exc:
-            raise ImageError(f"cannot read {path}: {exc.strerror or exc}") from exc
+            raise ImageError(f"cannot read {exc.filename}: {exc.strerror or exc}") from exc
         text = raw.decode("utf-8")
         for match in _ANY_FROM.finditer(text):
             rest = match.group("rest")
@@ -149,7 +178,7 @@ def image_specs(images_dir: Path | None = None) -> list[ImageSpec]:
                 raise ImageError(f"{path}: FROM line is not pinned by digest: {match.group(0)!r}")
         stages = {m.group("stage"): m for m in _FROM.finditer(text)}
         defaults = {m.group("name"): m.group("value") for m in _ARG_DEFAULT.finditer(text)}
-        if eco.build_arg not in defaults:
+        if eco.build_arg is not None and eco.build_arg not in defaults:
             raise ImageError(f"{path}: no ARG {eco.build_arg}")
         for version in eco.versions:
             stage = stages.get(f"base-{version}")
@@ -164,6 +193,8 @@ def image_specs(images_dir: Path | None = None) -> list[ImageSpec]:
                     context=context,
                     base=f"{stage.group('name')}@sha256:{stage.group('digest')}",
                     dockerfile_sha256=hashlib.sha256(raw).hexdigest(),
+                    dockerfile=path,
+                    sources_sha256=sources,
                 )
             )
         extra = sorted(set(stages) - {f"base-{v}" for v in eco.versions})
@@ -183,6 +214,8 @@ class LockEntry(BaseModel):
     dockerfile_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     build_args: dict[str, str]
     tools: dict[str, str]
+    #: SHA-256 of each source file copied into the image (the proxy's server), by name.
+    sources_sha256: dict[str, str] = Field(default_factory=dict)
 
 
 class DigestsLock(BaseModel):
@@ -218,6 +251,7 @@ def make_lock_entry(spec: ImageSpec, tools: Mapping[str, str]) -> LockEntry:
         dockerfile_sha256=spec.dockerfile_sha256,
         build_args=spec.build_args,
         tools=dict(tools),
+        sources_sha256=dict(spec.sources_sha256),
     )
 
 
@@ -243,6 +277,11 @@ def lock_problems(specs: Sequence[ImageSpec], lock: DigestsLock) -> list[str]:
             )
         if entry.dockerfile_sha256 != spec.dockerfile_sha256:
             problems.append(f"{key}: the Dockerfile changed since the lock was written")
+        if entry.sources_sha256 != dict(spec.sources_sha256):
+            changed = sorted(set(entry.sources_sha256) ^ {n for n, _ in spec.sources_sha256}) or [
+                n for n, h in spec.sources_sha256 if entry.sources_sha256.get(n) != h
+            ]
+            problems.append(f"{key}: source(s) {changed} changed since the lock was written")
         if entry.build_args != spec.build_args:
             problems.append(
                 f"{key}: build args {entry.build_args} in the lock, {spec.build_args} expected"
@@ -273,7 +312,7 @@ def build_image(spec: ImageSpec, *, no_cache: bool = False) -> None:
         argv.append("--no-cache")
     for name, value in spec.build_args.items():
         argv += ["--build-arg", f"{name}={value}"]
-    argv += ["--tag", spec.tag, str(spec.context)]
+    argv += ["--file", str(spec.dockerfile_path), "--tag", spec.tag, str(spec.context)]
     result = spawn.run(argv, env=spawn.inherit(*_DOCKER_CLI_ENV), timeout_s=BUILD_TIMEOUT_S)
     if result.timed_out:
         raise ImageError(f"{spec.key}: build timed out after {BUILD_TIMEOUT_S:.0f} s")
@@ -329,7 +368,8 @@ def probe_tools(client: docker.DockerClient, spec: ImageSpec) -> dict[str, str]:
     try:
         raw = client.containers.run(
             spec.tag,
-            ["sh", "-c", _probe_script(spec.ecosystem)],
+            [_probe_script(spec.ecosystem)],
+            entrypoint=["/bin/sh", "-c"],  # the proxy image's entrypoint is the server
             network_mode="none",
             cap_drop=["ALL"],
             security_opt=["no-new-privileges"],

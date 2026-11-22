@@ -70,6 +70,7 @@ Proposal:
 
 Residual risk, documented: install lifecycle scripts can reach allowlisted registries.
 Implemented in P2-08a (2026-11-22): the concrete host list, narrow-only config, ECH refusal and two further documented risks (whole `github.com`, domain fronting) are in SPEC §9.3 and §20.
+P2-08b (2026-11-22): the proxy does no DNS; the host resolves the allowlisted names when it starts the proxy (gVisor has no Docker DNS), see SPEC §9.3 and §20.
 
 **A8 [SPEC] Knowledge fetches happen on the host.**
 FR-6 says changelog fetches go "through the egress allowlist", but the §9.3 proxy allowlist only covers package registries.

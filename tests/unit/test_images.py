@@ -4,6 +4,7 @@ without Docker. The real builds are in `test_images_docker.py`.
 
 from __future__ import annotations
 
+import hashlib
 import re
 import shutil
 from pathlib import Path
@@ -59,6 +60,7 @@ def test_the_spec_lists_every_image(specs: list[ImageSpec]) -> None:
         "python:3.11",
         "python:3.12",
         "python:3.13",
+        "proxy:1",
     ]
     assert [s.tag for s in specs][:2] == ["mpilot/node:18", "mpilot/node:20"]
 
@@ -70,13 +72,20 @@ def test_every_base_is_pinned_by_digest_to_the_right_tag(specs: list[ImageSpec])
         expected = {
             "node": f"node:{spec.version}-bookworm-slim",
             "python": f"python:{spec.version}-slim-bookworm",
+            "proxy": "python:3.12-slim-bookworm",
         }[spec.ecosystem.name]
         assert name == expected
 
 
-def test_no_two_images_share_a_base_digest(specs: list[ImageSpec]) -> None:
-    digests = [s.base.partition("@")[2] for s in specs]
+def test_no_two_sandbox_images_share_a_base_digest(specs: list[ImageSpec]) -> None:
+    digests = [s.base.partition("@")[2] for s in specs if s.ecosystem.sandbox]
     assert len(set(digests)) == len(digests)
+
+
+def test_the_proxy_uses_the_python_3_12_pin(specs: list[ImageSpec]) -> None:
+    by_key = {s.key: s for s in specs}
+    assert by_key["proxy:1"].base == by_key["python:3.12"].base
+    assert not by_key["proxy:1"].ecosystem.sandbox
 
 
 @pytest.mark.parametrize("eco", ["node", "python"])
@@ -177,6 +186,14 @@ def test_the_lock_records_what_the_images_were_built_from(lock: DigestsLock) -> 
     for key, entry in lock.images.items():
         assert SHA.match(entry.dockerfile_sha256)
         assert "@sha256:" in entry.base
+        if key == "proxy:1":
+            server = Path(im.__file__).parent / "proxy" / "server.py"
+            assert entry.sources_sha256 == {
+                "server.py": hashlib.sha256(server.read_bytes()).hexdigest()
+            }
+            assert entry.build_args == {}
+            continue
+        assert entry.sources_sha256 == {}
         assert entry.tools["tree-sitter"].startswith("tree-sitter 0.25.10")
         if key.startswith("node:"):
             assert entry.tools["pnpm"] == "10.34.9"
@@ -211,6 +228,26 @@ def test_a_changed_base_digest_is_reported(specs: list[ImageSpec], lock: Digests
 def test_an_edited_dockerfile_is_reported(specs: list[ImageSpec], lock: DigestsLock) -> None:
     problems = lock_problems(specs, _tweak(lock, "python:3.12", dockerfile_sha256="0" * 64))
     assert any("python:3.12" in p and "Dockerfile changed" in p for p in problems)
+
+
+def test_a_changed_proxy_source_is_reported(specs: list[ImageSpec], lock: DigestsLock) -> None:
+    stale = _tweak(lock, "proxy:1", sources_sha256={"server.py": "0" * 64})
+    assert any("proxy:1" in p and "server.py" in p for p in lock_problems(specs, stale))
+    dropped = _tweak(lock, "proxy:1", sources_sha256={})
+    assert any("proxy:1" in p and "server.py" in p for p in lock_problems(specs, dropped))
+
+
+def test_the_proxy_dockerfile_adds_only_the_server() -> None:
+    text = (IMAGES_DIR / "proxy" / "Dockerfile").read_text()
+    instructions = [
+        line.split()[0] for line in text.splitlines() if line.strip() and not line.startswith("#")
+    ]
+    assert "RUN" not in instructions, "nothing installed: the server is stdlib only"
+    assert re.findall(r"^COPY .*$", text, re.M) == [
+        "COPY --chmod=0444 server.py /opt/egress-proxy/server.py"
+    ]
+    assert re.findall(r"^USER (\S+)", text, re.M) == ["65534:65534"]
+    assert 'ENTRYPOINT ["python", "-I", "-S", "/opt/egress-proxy/server.py"]' in text
 
 
 def test_a_missing_entry_is_reported(specs: list[ImageSpec], lock: DigestsLock) -> None:

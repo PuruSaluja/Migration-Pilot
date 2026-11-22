@@ -398,6 +398,39 @@ async def system_resolver(host: str, port: int) -> list[str]:
     return out
 
 
+def static_resolver(addresses: dict[str, list[str]]) -> Resolver:
+    """Answers only from `addresses` (host -> addresses), which the host resolved and checked
+    when it started the proxy. Under gVisor the container cannot use Docker's DNS, and this
+    also means the proxy never asks a resolver anything at run time. A host not in the map
+    fails to resolve."""
+    table = {host: list(ips) for host, ips in addresses.items()}
+
+    async def resolve(host: str, port: int) -> list[str]:
+        found = table.get(host)
+        if not found:
+            raise OSError(f"{host} was not resolved when the proxy started")
+        return list(found)
+
+    return resolve
+
+
+def parse_address_args(values: Iterable[str]) -> dict[str, list[str]]:
+    """`host=ip[,ip...]` arguments. Hosts are normalized names, addresses parse as IPs."""
+    out: dict[str, list[str]] = {}
+    for value in values:
+        host, sep, rest = value.partition("=")
+        if not sep or not rest:
+            raise ValueError(f"--address {value!r}: expected HOST=IP[,IP...]")
+        try:
+            normal = normalize_host(host)
+        except Denied as exc:
+            raise ValueError(f"--address {value!r}: {exc.reason.value}") from None
+        if normal != host or host in out:
+            raise ValueError(f"--address {value!r}: host not normalized or given twice")
+        out[host] = [str(ipaddress.ip_address(ip)) for ip in rest.split(",")]
+    return out
+
+
 Upstream = tuple[asyncio.StreamReader, asyncio.StreamWriter, str]
 OpenUpstream = Callable[[str, int], Awaitable[Upstream]]
 
@@ -503,7 +536,13 @@ class EgressProxy:
 
     @property
     def active(self) -> int:
+        """Connections holding a slot (counted until their socket is gone)."""
         return self._active
+
+    @property
+    def connections(self) -> int:
+        """Connection handlers still running, slot or not."""
+        return len(self._tasks)
 
     def log_event(self, event: str, **fields: object) -> None:
         record: dict[str, object] = {"ts": round(self._clock(), 3), "event": event}
@@ -604,7 +643,12 @@ class EgressProxy:
             return
         target = f"{request.host}:{request.port}"
         writer.write(b"HTTP/1.1 200 Connection established\r\n\r\n")
-        await asyncio.wait_for(writer.drain(), limits.idle_timeout_s)
+        try:
+            await asyncio.wait_for(writer.drain(), limits.idle_timeout_s)
+        except TimeoutError:
+            stalled = Denied(Deny.TIMEOUT, "client not reading the 200")
+            await self._refuse(writer, stalled, client, target, respond=False)
+            return
         try:
             hello = await asyncio.wait_for(self._read_hello(reader), limits.hello_timeout_s)
             sni, first = hello
@@ -701,16 +745,19 @@ class EgressProxy:
 
         up = asyncio.ensure_future(pipe(c_reader, u_writer, 0))
         down = asyncio.ensure_future(pipe(u_reader, c_writer, 1))
-        done, pending = await asyncio.wait({up, down}, return_when=asyncio.FIRST_COMPLETED)
-        # One direction finished. After a clean EOF the other may still be sending (half-close)
-        # and is left to finish; it has its own idle and stall limits. Anything else ends the
-        # tunnel at once.
-        if pending and all(t.exception() is None and t.result() == "eof" for t in done):
-            await asyncio.wait(pending)
-        for task in pending:
-            task.cancel()
-            with contextlib.suppress(asyncio.CancelledError, Exception):
-                await task
+        try:
+            done, pending = await asyncio.wait({up, down}, return_when=asyncio.FIRST_COMPLETED)
+            # One direction finished. After a clean EOF the other may still be sending
+            # (half-close) and is left to finish; it has its own idle and stall limits.
+            # Anything else ends the tunnel at once.
+            if pending and all(t.exception() is None and t.result() == "eof" for t in done):
+                await asyncio.wait(pending)
+        finally:
+            for task in (up, down):  # also when this coroutine itself is cancelled
+                if not task.done():
+                    task.cancel()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await task
         return counts[0], counts[1]
 
     async def aclose(self) -> None:
@@ -740,6 +787,14 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     parser.add_argument("--port", type=int, default=DEFAULT_LISTEN_PORT)
     parser.add_argument("--allow", action="append", default=[], metavar="HOST", required=True)
     parser.add_argument("--client-cidr", action="append", default=[], metavar="CIDR", required=True)
+    parser.add_argument(
+        "--address",
+        action="append",
+        default=[],
+        metavar="HOST=IP[,IP]",
+        help="the addresses of an allowlisted host, resolved by whoever starts the proxy; "
+        "with any --address the proxy never resolves names itself",
+    )
     return parser.parse_args(argv)
 
 
@@ -752,14 +807,32 @@ def config_from_args(args: argparse.Namespace) -> ProxyConfig:
     return ProxyConfig(allowlist=allow, client_networks=nets)
 
 
+def resolver_from_args(args: argparse.Namespace, allow: frozenset[str]) -> Resolver:
+    """The static table when `--address` is given (always, in the container), else the system
+    resolver (host tests). An address for a host that is not allowlisted is refused."""
+    if not args.address:
+        return system_resolver
+    try:
+        table = parse_address_args(args.address)
+    except ValueError as exc:
+        raise SystemExit(f"egress-proxy: {exc}") from None
+    stray = sorted(set(table) - allow)
+    if stray:
+        raise SystemExit(f"egress-proxy: --address for hosts not on the allowlist: {stray}")
+    return static_resolver(table)
+
+
 async def _serve_forever(args: argparse.Namespace) -> None:
-    proxy = EgressProxy(config_from_args(args))
+    config = config_from_args(args)
+    resolver = resolver_from_args(args, config.allowlist)
+    proxy = EgressProxy(config, open_upstream=public_upstream(resolver))
     server = await proxy.start(args.listen, args.port)
     proxy.log_event(
         "ready",
         listen=f"{args.listen}:{args.port}",
         allowlist=sorted(proxy.config.allowlist),
         client_cidr=[str(n) for n in proxy.config.client_networks],
+        static_addresses=bool(args.address),
     )
     async with server:
         await server.serve_forever()
