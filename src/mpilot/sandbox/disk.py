@@ -3,7 +3,7 @@
 Docker cannot enforce a disk quota on ext4, so three things bound a sandbox's disk use:
 1. `runs/` (workspaces, mirrors, exports, package caches) sits on a fixed-size loopback
    filesystem, a hard ceiling that protects the host disk. `check_runs_filesystem` verifies it.
-2. The driver polls the workspace (and later the package cache) while a command runs and kills
+2. The driver polls the workspace and the mounted package cache while a command runs and kills
    it at `sandbox.disk_gb` (`HostWorkspace.disk_usage_bytes`, `DockerSandbox.exec`).
 3. `/tmp` is a size-capped tmpfs, and the container's root is read-only, so nothing else grows.
 """

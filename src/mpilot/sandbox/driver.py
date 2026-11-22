@@ -5,8 +5,12 @@ Scope (P2-02, P2-03). Built here: runtime detection (gVisor `runsc`, else `runc`
 warning), `create` with the §9.3 hardening and limits, `exec` with output tails, timeouts and
 cancellation, `frozen()` (P2-03), `export_workspace`/`restore` (P2-04), the disk limit and the
 `/tmp` cap (P2-05, D6), `destroy`, `reap`. Owned by later tasks, and refused with
-`NotImplementedError` until then: package-cache mounts (P2-07), `NetworkMode.REGISTRY` and the
-install container (P2-09).
+`NotImplementedError` until then: `NetworkMode.REGISTRY` and the install container (P2-09),
+and `CacheMode.HASH_VERIFIED` (P3-13, final verification).
+
+Package caches (P2-07b, `sandbox/cache.py`): with a `cache_root`, a work container gets its
+cache at `/cache`, read-only, with the package managers pointed at it; a fresh cache is created
+for `CacheMode.FRESH` and removed with the sandbox; the cache counts toward the disk limit.
 
 How the container behaves, learned on this host (WSL2, Docker 29, runsc, systrap platform):
 - Under gVisor a command that passes the memory or pids limit does not fail alone: the whole
@@ -31,6 +35,7 @@ import threading
 import time
 from collections.abc import AsyncIterator, Awaitable, Mapping, Sequence
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
+from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 from typing import Any, Final, TypeVar
@@ -44,6 +49,7 @@ from mpilot.core.errors import ExportIntegrityError, MpilotError, PathEscapeErro
 from mpilot.core.types import NetworkMode, RunId
 from mpilot.models.artifacts import ExportManifest
 from mpilot.sandbox.base import (
+    CacheMode,
     ContainerRuntime,
     ExecResult,
     FreezeMechanism,
@@ -52,6 +58,14 @@ from mpilot.sandbox.base import (
     SandboxDriver,
     SandboxSpec,
     sandbox_env_problems,
+)
+from mpilot.sandbox.cache import (
+    CacheError,
+    CacheRole,
+    CacheStore,
+    cache_env,
+    cache_volume,
+    check_key,
 )
 from mpilot.sandbox.disk import DISK_POLL_S, GIB, human_bytes, tmpfs_options
 from mpilot.sandbox.workspace import HostWorkspace
@@ -231,6 +245,14 @@ class _Stream:
             self.finished.set_result(None)
 
 
+@dataclass(frozen=True)
+class _CachePlan:
+    """The cache directory one sandbox mounts, and whether it owns (and removes) it."""
+
+    path: Path
+    fresh: bool
+
+
 class DockerSandbox:
     """One work container (`Sandbox`). Created by `DockerDriver.create`."""
 
@@ -246,6 +268,8 @@ class DockerSandbox:
         runtime: ContainerRuntime,
         warnings: Sequence[str],
         tail_bytes: int = DEFAULT_TAIL_BYTES,
+        cache: _CachePlan | None = None,
+        cache_store: CacheStore | None = None,
     ) -> None:
         self._client = client
         self._container_id = container_id
@@ -253,10 +277,13 @@ class DockerSandbox:
         self._run_id = run_id
         self._workspace = workspace
         #: D6: the workspace is measured while a command runs and the command is killed past
-        #: this many bytes. Public so tests (and a later cache mount, P2-07) can adjust them.
+        #: this many bytes. Public so tests can adjust them.
         self.disk_limit_bytes = disk_limit_bytes
         self.disk_poll_s = DISK_POLL_S
         self._meter = HostWorkspace(workspace)  # metadata only: no sandbox bound, no freeze
+        self._cache = cache
+        self._cache_store = cache_store
+        self._cache_meter = HostWorkspace(cache.path) if cache is not None else None
         self._runtime = runtime
         self._warnings = list(warnings)
         self._destroyed = False
@@ -596,8 +623,18 @@ class DockerSandbox:
 
     # -- disk limit (D6)
 
+    @property
+    def cache_dir(self) -> Path | None:
+        """The host directory mounted at `/cache`, or None when this driver has no cache root."""
+        return self._cache.path if self._cache is not None else None
+
     def _disk_usage(self) -> int:
-        return self._meter.disk_usage_bytes(self.disk_limit_bytes)
+        """Workspace plus package cache: one 20 GB budget (§9.3). The cache is measured with
+        what is left of the limit, so the walk stops early once the total is over it."""
+        used = self._meter.disk_usage_bytes(self.disk_limit_bytes)
+        if self._cache_meter is not None and used <= self.disk_limit_bytes:
+            used += self._cache_meter.disk_usage_bytes(self.disk_limit_bytes - used)
+        return used
 
     async def _disk_watch(self) -> str:
         """Poll the workspace while a command runs; return why, once it must be stopped. Never
@@ -620,8 +657,9 @@ class DockerSandbox:
                 continue
             failures = 0
             if used > self.disk_limit_bytes:
+                what = "the workspace" if self._cache is None else "the workspace and package cache"
                 return (
-                    f"the workspace passed the disk limit of {human_bytes(self.disk_limit_bytes)} "
+                    f"{what} passed the disk limit of {human_bytes(self.disk_limit_bytes)} "
                     f"({human_bytes(used)} used)"
                 )
 
@@ -776,6 +814,9 @@ class DockerSandbox:
 
         await asyncio.to_thread(remove)
         self._destroyed = True
+        if self._cache is not None and self._cache.fresh and self._cache_store is not None:
+            # After the container is verified gone: nothing can be writing to it any more.
+            await asyncio.to_thread(self._cache_store.remove_fresh, self._cache.path)
 
 
 class _State(StrEnum):
@@ -852,6 +893,7 @@ class DockerDriver:
         uid: int | None = None,
         gid: int | None = None,
         tail_bytes: int = DEFAULT_TAIL_BYTES,
+        cache_root: Path | None = None,
     ) -> None:
         self._uid = os.getuid() if uid is None else uid
         self._gid = os.getgid() if gid is None else gid
@@ -863,6 +905,8 @@ class DockerDriver:
         self._runsc = runsc_name
         self._runc = runc_name
         self._tail_bytes = tail_bytes
+        #: `runs/cache/`. Without it no cache is mounted (the lifecycle tests run that way).
+        self._cache_store = CacheStore(cache_root) if cache_root is not None else None
 
     # -- runtime detection
 
@@ -900,24 +944,57 @@ class DockerDriver:
         except ImageNotFound:
             raise RuntimeError(
                 f"image {spec.image} is not available locally "
-                "(build it with the image script, P2-07)"
+                "(build it with scripts/build-images.sh)"
             ) from None
+        if self._cache_store is not None:
+            if spec.cache is CacheMode.HASH_VERIFIED:
+                raise NotImplementedError(
+                    "a hash-verified cache is built with final verification (P3-13); "
+                    "use CacheMode.FRESH until then"
+                )
+            if spec.cache is CacheMode.RUN:
+                check_key(spec.cache_key)
+
+    def _cache_plan(self, spec: SandboxSpec) -> _CachePlan | None:
+        """The cache directory this sandbox mounts (created here), or None without a root."""
+        store = self._cache_store
+        if store is None:
+            return None
+        if spec.cache is CacheMode.FRESH:
+            return _CachePlan(store.fresh_dir(str(spec.run_id)), fresh=True)
+        path = store.run_dir(spec.cache_key)
+        if HostWorkspace(path).disk_usage_bytes() > spec.limits.disk_gb * GIB:
+            raise RuntimeError(
+                f"the package cache {path.name[:12]}... is already over the disk limit of "
+                f"{spec.limits.disk_gb} GiB; remove it (a command would be killed at once)"
+            )
+        return _CachePlan(path, fresh=False)
 
     def _create(self, spec: SandboxSpec) -> DockerSandbox:
         self._preflight(spec)
         _check_workspace(spec.workspace_host_path)
+        plan = self._cache_plan(spec)
+        try:
+            return self._create_with(spec, plan)
+        except BaseException:
+            if plan is not None and plan.fresh and self._cache_store is not None:
+                with contextlib.suppress(OSError, CacheError):
+                    self._cache_store.remove_fresh(plan.path)
+            raise
+
+    def _create_with(self, spec: SandboxSpec, plan: _CachePlan | None) -> DockerSandbox:
 
         warnings: list[str] = []
         if spec.prefer_runtime is ContainerRuntime.RUNC:
             warnings.append("runc was requested: the container shares the host kernel (NFR-10)")
-            container = self._start(spec, self._runc)
+            container = self._start(spec, self._runc, plan)
             runtime = ContainerRuntime.RUNC
         else:
             info = self.detect_runtime()
             warnings.extend(info.warnings)
             if info.runtime is ContainerRuntime.RUNSC:
                 try:
-                    container = self._start(spec, self._runsc)
+                    container = self._start(spec, self._runsc, plan)
                     runtime = ContainerRuntime.RUNSC
                 except APIError as exc:
                     if not _RUNTIME_FAILURE.search(str(exc)):
@@ -926,10 +1003,10 @@ class DockerDriver:
                         f"gVisor ({self._runsc}) failed to start the container, falling back "
                         f"to runc, which shares the host kernel (NFR-10): {exc.explanation or exc}"
                     )
-                    container = self._start(spec, self._runc)
+                    container = self._start(spec, self._runc, plan)
                     runtime = ContainerRuntime.RUNC
             else:
-                container = self._start(spec, self._runc)
+                container = self._start(spec, self._runc, plan)
                 runtime = ContainerRuntime.RUNC
         sandbox = DockerSandbox(
             self._client,
@@ -941,6 +1018,8 @@ class DockerDriver:
             runtime=runtime,
             warnings=warnings,
             tail_bytes=self._tail_bytes,
+            cache=plan,
+            cache_store=self._cache_store,
         )
         try:
             sandbox._setup()
@@ -950,10 +1029,16 @@ class DockerDriver:
             raise
         return sandbox
 
-    def _start(self, spec: SandboxSpec, runtime_name: str) -> Any:
+    def _start(self, spec: SandboxSpec, runtime_name: str, plan: _CachePlan | None) -> Any:
         """Create and start the work container; on failure leave nothing behind."""
         name = f"mpilot-work-{secrets.token_hex(6)}"
         limits = spec.limits
+        volumes = {str(spec.workspace_host_path): {"bind": "/workspace", "mode": "rw"}}
+        environment = {**spec.env, "HOME": CONTAINER_HOME}
+        if plan is not None:
+            # Read-only here; only an install container mounts it read-write (§9.3).
+            volumes.update(cache_volume(plan.path, CacheRole.WORK))
+            environment.update(cache_env(CacheRole.WORK))
         container = None
         try:
             container = self._client.containers.create(
@@ -964,7 +1049,7 @@ class DockerDriver:
                 init=True,
                 user=f"{self._uid}:{self._gid}",
                 working_dir="/workspace",
-                environment={**spec.env, "HOME": CONTAINER_HOME},
+                environment=environment,
                 read_only=True,
                 cap_drop=["ALL"],
                 security_opt=["no-new-privileges"],
@@ -975,7 +1060,7 @@ class DockerDriver:
                 memswap_limit=limits.memory_gb * 1024**3,
                 nano_cpus=int(limits.cpus * 1_000_000_000),
                 tmpfs={CONTAINER_HOME: tmpfs_options(limits.memory_gb)},
-                volumes={str(spec.workspace_host_path): {"bind": "/workspace", "mode": "rw"}},
+                volumes=volumes,
                 log_config=LogConfig(type=LogConfig.types.NONE),
                 labels={LABEL_RUN: str(spec.run_id), LABEL_ROLE: ROLE_WORK},
                 detach=True,
@@ -1044,6 +1129,8 @@ class DockerDriver:
             with contextlib.suppress(NotFound):
                 api.remove_network(net["Id"])
             removed += 1
+        if self._cache_store is not None:
+            self._cache_store.sweep_fresh(str(run_id))  # a crashed run's fresh caches
         leftovers = api.containers(all=True, filters=flt, quiet=True) + api.networks(filters=flt)
         if leftovers:
             raise RuntimeError(f"{len(leftovers)} object(s) of run {run_id} survived reap")

@@ -17,7 +17,7 @@ from docker.errors import APIError
 
 from mpilot.core.types import NetworkMode, RunId, new_run_id
 from mpilot.sandbox import base as sb
-from mpilot.sandbox.base import ContainerRuntime, ResourceLimits, SandboxSpec
+from mpilot.sandbox.base import CacheMode, ContainerRuntime, ResourceLimits, SandboxSpec
 from mpilot.sandbox.driver import LABEL_RUN, DockerDriver, DockerSandbox
 
 IMAGE_REF = "busybox:1.36"
@@ -57,14 +57,20 @@ def make_spec(
     memory_gb: int = 1,
     prefer: ContainerRuntime = ContainerRuntime.RUNSC,
     env: dict[str, str] | None = None,
+    cache_key: str = "lock-hash",
+    cache: CacheMode = CacheMode.RUN,
+    from_commit: str | None = None,
+    disk_gb: int = 1,
 ) -> SandboxSpec:
     return SandboxSpec(
         run_id=rid,
         image=image,
-        limits=ResourceLimits(cpus=1, memory_gb=memory_gb, disk_gb=1, pids=pids),
+        limits=ResourceLimits(cpus=1, memory_gb=memory_gb, disk_gb=disk_gb, pids=pids),
         workspace_host_path=workspace,
         env=env or {},
-        cache_key="lock-hash",
+        cache_key=cache_key,
+        cache=cache,
+        from_commit=from_commit,
         prefer_runtime=prefer,
     )
 

@@ -105,7 +105,7 @@ class SandboxSpec(_Frozen):
     workspace_host_path: Path  # runs/<id>/workspace, bind-mounted at /workspace
     env: Mapping[str, str] = Field(default_factory=dict)
     cache: CacheMode = CacheMode.RUN
-    cache_key: str = Field(min_length=1)  # lockfile hash (P2-07)
+    cache_key: str = Field(min_length=1)  # lockfile hash: `cache.cache_key` (P2-07b)
     #: Set for final verification only: the mirror commit the workspace was built from (§9.5).
     from_commit: str | None = None
     prefer_runtime: ContainerRuntime = ContainerRuntime.RUNSC
