@@ -29,6 +29,7 @@ from mpilot.sandbox.network import (
     NetworkSetupError,
     ProxyEvent,
     ProxyHandle,
+    create_internal_network,
     system_resolve,
 )
 
@@ -109,9 +110,8 @@ def images() -> dict[str, str]:
 
 
 def make_internal(client: docker.DockerClient, rid: RunId, suffix: str = "") -> str:
-    name = f"mpilot-int-{rid}{suffix}"
-    client.networks.create(name, driver="bridge", internal=True, labels={LABEL_RUN: str(rid)})
-    return name
+    del suffix  # names are unique already
+    return create_internal_network(client, rid)
 
 
 @pytest.fixture
@@ -210,6 +210,7 @@ def test_the_networks_are_what_the_design_says(
     assert egress["Options"]["com.docker.network.bridge.enable_icc"] == "false"
     inner = client.networks.get(internal).attrs
     assert inner["Internal"] is True
+    assert inner["Options"]["com.docker.network.bridge.gateway_mode_ipv4"] == "isolated"
 
 
 def test_the_proxy_gets_the_configured_allowlist_and_host_resolved_addresses(
@@ -352,6 +353,53 @@ def test_a_network_that_is_not_internal_is_refused(
             )
         )
     assert _proxies(client, run_id) == []
+
+
+def test_an_internal_network_that_gives_the_host_an_address_is_refused(
+    client: docker.DockerClient, manager: EgressProxyManager, run_id: RunId, images: dict[str, str]
+) -> None:
+    """On a plain internal network the host kernel answers at the gateway IP (P2-08b review)."""
+    name = f"mpilot-plain-{run_id}"
+    client.networks.create(name, driver="bridge", internal=True, labels={LABEL_RUN: str(run_id)})
+    with pytest.raises(NetworkSetupError, match="isolated"):
+        asyncio.run(
+            manager.start(
+                run_id=run_id,
+                internal_network=name,
+                settings=SandboxSettings(),
+                image=images["proxy:1"],
+            )
+        )
+    assert _proxies(client, run_id) == []
+
+
+def test_a_network_that_already_has_members_is_refused(
+    client: docker.DockerClient,
+    manager: EgressProxyManager,
+    run_id: RunId,
+    internal: str,
+    images: dict[str, str],
+) -> None:
+    squatter = client.containers.run(
+        CLIENT_IMAGE,
+        ["sleep", "60"],
+        network=internal,
+        detach=True,
+        labels={LABEL_RUN: str(run_id)},
+    )
+    try:
+        with pytest.raises(NetworkSetupError, match="already has members"):
+            asyncio.run(
+                manager.start(
+                    run_id=run_id,
+                    internal_network=internal,
+                    settings=SandboxSettings(),
+                    image=images["proxy:1"],
+                )
+            )
+        assert _proxies(client, run_id) == []
+    finally:
+        squatter.remove(force=True)
 
 
 def test_another_runs_network_is_refused(

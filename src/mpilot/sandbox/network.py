@@ -41,12 +41,11 @@ from mpilot.config import DEFAULT_EGRESS_ALLOWLIST, SandboxSettings
 from mpilot.core.errors import MpilotError
 from mpilot.core.types import RunId
 from mpilot.sandbox.base import ContainerRuntime
-from mpilot.sandbox.driver import LABEL_ROLE, LABEL_RUN
+from mpilot.sandbox.labels import LABEL_ROLE, LABEL_RUN, ROLE_NETWORK, ROLE_PROXY
 from mpilot.sandbox.proxy.server import DEFAULT_LISTEN_PORT, is_public_address
 
 EGRESS_NETWORK: Final = "mpilot-egress"
 LABEL_EGRESS: Final = "mpilot.egress"
-ROLE_PROXY: Final = "proxy"
 PROXY_PORT: Final = DEFAULT_LISTEN_PORT
 READY_TIMEOUT_S: Final = 20.0
 #: The proxy's log is the record of every denial; it is capped so an install loop cannot fill
@@ -55,6 +54,16 @@ LOG_MAX_SIZE: Final = "10m"
 #: The most log text `proxy_events` reads back.
 MAX_LOG_BYTES: Final = 4 * 1024 * 1024
 _ICC: Final = "com.docker.network.bridge.enable_icc"
+#: Docker 28+: the host takes no address on the bridge, so nothing on the network can reach
+#: the host through a gateway address (P2-08b review: on a plain internal network a container
+#: reached the host kernel at the gateway IP).
+_GATEWAY_MODE: Final = "com.docker.network.bridge.gateway_mode_ipv4"
+_GATEWAY_MODE_V6: Final = "com.docker.network.bridge.gateway_mode_ipv6"
+_ISOLATED: Final = "isolated"
+#: The isolated gateway mode exists from Docker Engine 28. Older engines accept the option and
+#: echo it back in `Options` without acting on it, so the option alone proves nothing: the
+#: engine's version is checked before a run network is made or used.
+MIN_DOCKER_MAJOR: Final = 28
 
 
 class NetworkSetupError(MpilotError):
@@ -67,7 +76,11 @@ Resolve = Callable[[str], list[str]]
 
 
 def system_resolve(host: str) -> list[str]:
-    infos = socket.getaddrinfo(host, 443, type=socket.SOCK_STREAM, proto=socket.IPPROTO_TCP)
+    """IPv4 only: the egress bridge has no IPv6, so an IPv6 answer could only cost the proxy a
+    failed connect (and slow, if blackholed) before it tried the next address."""
+    infos = socket.getaddrinfo(
+        host, 443, family=socket.AF_INET, type=socket.SOCK_STREAM, proto=socket.IPPROTO_TCP
+    )
     out: list[str] = []
     for *_, sockaddr in infos:
         address = str(sockaddr[0])
@@ -110,6 +123,70 @@ def proxy_command(
         if host in addresses:
             argv += ["--allow", host, "--address", f"{host}={','.join(addresses[host])}"]
     return argv
+
+
+# --- a run's internal network ---------------------------------------------------------------
+
+
+def require_isolated_gateway_support(client: docker.DockerClient) -> None:
+    """Refuse an engine older than Docker 28, where the isolated gateway is silently ignored
+    and the host would keep an address on every run network (P2-09 review B1)."""
+    raw = str(client.version().get("Version", ""))
+    try:
+        major = int(raw.split(".", 1)[0])
+    except ValueError:
+        raise NetworkSetupError(f"cannot read the Docker Engine version ({raw!r})") from None
+    if major < MIN_DOCKER_MAJOR:
+        raise NetworkSetupError(
+            f"Docker Engine {raw} is too old: run networks need {MIN_DOCKER_MAJOR}.0 or later "
+            "(isolated gateway mode), or the host stays reachable from install containers"
+        )
+
+
+def create_internal_network(client: docker.DockerClient, run_id: RunId) -> str:
+    """A new internal network for `run_id`: no route out (`internal`), and the host takes no
+    address on it (isolated gateway, IPv4 and IPv6), so its members can reach each other and
+    nothing else. Refused on an engine that would ignore the isolation."""
+    require_isolated_gateway_support(client)
+    name = f"mpilot-int-{run_id}-{secrets.token_hex(4)}"
+    client.networks.create(
+        name,
+        driver="bridge",
+        internal=True,
+        options={_GATEWAY_MODE: _ISOLATED, _GATEWAY_MODE_V6: _ISOLATED},
+        labels={LABEL_RUN: str(run_id), LABEL_ROLE: ROLE_NETWORK},
+    )
+    return name
+
+
+def remove_network(client: docker.DockerClient, name: str) -> None:
+    """Remove a network and verify it is gone. Members must already be gone."""
+    with contextlib.suppress(NotFound):
+        client.api.remove_network(name)
+    try:
+        client.api.inspect_network(name)
+    except NotFound:
+        return
+    raise NetworkSetupError(f"network {name} is still there after removal")
+
+
+def network_members(client: docker.DockerClient, name: str) -> set[str]:
+    """The ids of the containers attached to `name`."""
+    attrs = client.api.inspect_network(name)
+    return set((attrs.get("Containers") or {}).keys())
+
+
+def require_members(client: docker.DockerClient, name: str, expected: set[str]) -> None:
+    """Refuse unless exactly `expected` are attached: "the only other member is the egress
+    proxy" (§9.3) is checked, not assumed."""
+    found = network_members(client, name)
+    if found != expected:
+        unexpected = sorted(found - expected)
+        missing = sorted(expected - found)
+        raise NetworkSetupError(
+            f"network {name} members are not as required: unexpected {unexpected}, "
+            f"missing {missing}"
+        )
 
 
 # --- the proxy's log ---------------------------------------------------------------------------
@@ -167,6 +244,49 @@ class ProxyHandle:
     def url(self) -> str:
         """For `HTTPS_PROXY` in an install container."""
         return f"http://{self.address}:{PROXY_PORT}"
+
+
+@dataclass(frozen=True)
+class EgressSetup:
+    """What a sandbox driver needs to run `REGISTRY` commands."""
+
+    manager: EgressProxyManager
+    settings: SandboxSettings  # its `egress_allowlist` is what the proxy allows
+    proxy_image: str  # `mpilot/proxy@sha256:...`
+
+
+def proxy_env(handle: ProxyHandle) -> dict[str, str]:
+    """Container-level variables that send every package manager through the proxy. Set by
+    the driver, never by the caller (none of them is on the exec allowlist). Plain HTTP is
+    routed to the proxy too, where it is refused and logged rather than failing silently."""
+    url = handle.url
+    return {
+        "HTTPS_PROXY": url,
+        "https_proxy": url,
+        "HTTP_PROXY": url,
+        "http_proxy": url,
+        "npm_config_https_proxy": url,
+        "npm_config_proxy": url,
+        "YARN_HTTPS_PROXY": url,  # yarn berry ignores HTTPS_PROXY
+        "YARN_HTTP_PROXY": url,
+        "NO_PROXY": "",
+        "no_proxy": "",
+    }
+
+
+@dataclass(frozen=True)
+class EgressRecord:
+    """What the proxy saw during one `REGISTRY` command."""
+
+    proxy: ProxyHandle
+    events: tuple[ProxyEvent, ...]
+    #: The 10 MB log cap dropped the start of the log (its "ready" line is gone): denials
+    #: from the start of the command are missing.
+    log_truncated: bool
+
+    @property
+    def denials(self) -> tuple[ProxyEvent, ...]:
+        return tuple(e for e in self.events if e.event == "deny")
 
 
 class EgressProxyManager:
@@ -227,6 +347,21 @@ class EgressProxyManager:
             raise NetworkSetupError(f"network {name} is not internal: it would have a route out")
         if attrs.get("Labels", {}).get(LABEL_RUN) != str(run_id):
             raise NetworkSetupError(f"network {name} does not belong to run {run_id}")
+        require_isolated_gateway_support(self._client)
+        options = attrs.get("Options") or {}
+        if attrs.get("EnableIPv6") and options.get(_GATEWAY_MODE_V6) != _ISOLATED:
+            raise NetworkSetupError(
+                f"network {name} has IPv6 with a host gateway: its members could reach the host"
+            )
+        if options.get(_GATEWAY_MODE) != _ISOLATED:
+            raise NetworkSetupError(
+                f"network {name} gives the host an address on it (gateway mode is not "
+                "isolated): its members could reach the host"
+            )
+        if attrs.get("Containers"):
+            raise NetworkSetupError(
+                f"network {name} already has members: the proxy must start on an empty one"
+            )
         subnets = [
             c["Subnet"]
             for c in (attrs.get("IPAM", {}).get("Config") or [])

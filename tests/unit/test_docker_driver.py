@@ -383,8 +383,9 @@ def test_exec_refuses_bad_arguments(sandbox: sb.Sandbox, run: Runner) -> None:
 
 
 @pytest.mark.docker
-def test_registry_mode_arrives_with_the_install_container(sandbox: sb.Sandbox, run: Runner) -> None:
-    with pytest.raises(NotImplementedError, match="P2-09"):
+def test_registry_mode_is_refused_without_an_egress_proxy(sandbox: sb.Sandbox, run: Runner) -> None:
+    """A driver built without `egress=` cannot run installs: refused, nothing started (P2-09)."""
+    with pytest.raises(RuntimeError, match="need an egress proxy"):
         run(sandbox.exec(["true"], network=NetworkMode.REGISTRY, timeout_s=30))
 
 

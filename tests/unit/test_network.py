@@ -212,7 +212,7 @@ def test_an_address_for_a_host_that_is_not_allowlisted_is_refused() -> None:
         px.resolver_from_args(args, frozenset({"pypi.org"}))
 
 
-# --- the shared egress network, with a fake Docker client -----------------------------------------
+# --- the shared egress network, with a fake Docker client ----------------------------------------
 
 
 class _Net:
@@ -289,3 +289,87 @@ def test_an_existing_egress_network_that_is_not_ours_or_lets_containers_talk_is_
     fake = _Client({**GOOD, **change})
     with pytest.raises(nw.NetworkSetupError, match=says):
         nw.EgressProxyManager(fake).ensure_egress_network()  # type: ignore[arg-type]
+
+
+# --- the Docker Engine floor for isolated gateways (P2-09 review B1) -----------------------------
+
+
+class _VersionClient:
+    def __init__(self, version: str) -> None:
+        self._version = version
+        self.networks = _Networks(None)
+
+    def version(self) -> dict[str, str]:
+        return {"Version": self._version}
+
+
+@pytest.mark.parametrize("version", ["28.0.0", "28.5.2", "29.10.0", "30.0.0-beta.1"])
+def test_engines_with_isolated_gateways_are_accepted(version: str) -> None:
+    nw.require_isolated_gateway_support(_VersionClient(version))  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("version", ["27.5.1", "26.1.4", "20.10.24", "", "unknown"])
+def test_older_or_unreadable_engines_are_refused(version: str) -> None:
+    with pytest.raises(nw.NetworkSetupError, match=r"too old|cannot read"):
+        nw.require_isolated_gateway_support(_VersionClient(version))  # type: ignore[arg-type]
+
+
+def test_no_run_network_is_created_on_an_old_engine() -> None:
+    from mpilot.core.types import RunId
+
+    fake = _VersionClient("27.5.1")
+    with pytest.raises(nw.NetworkSetupError, match="too old"):
+        nw.create_internal_network(fake, RunId("run-x"))  # type: ignore[arg-type]
+    assert fake.networks.created is None
+
+
+def test_the_proxy_variables_cover_npm_pip_and_both_yarns() -> None:
+    from mpilot.core.types import RunId
+    from mpilot.sandbox.base import ContainerRuntime
+
+    handle = nw.ProxyHandle(
+        container_id="c",
+        name="n",
+        run_id=RunId("r"),
+        internal_network="i",
+        client_cidr="172.30.0.0/24",
+        address="172.30.0.2",
+        runtime=ContainerRuntime.RUNSC,
+        allowed=(),
+        problems=(),
+        warnings=(),
+    )
+    env = nw.proxy_env(handle)
+    url = "http://172.30.0.2:3128"
+    for name in ("HTTPS_PROXY", "https_proxy", "npm_config_https_proxy", "YARN_HTTPS_PROXY"):
+        assert env[name] == url, name
+    assert env["NO_PROXY"] == env["no_proxy"] == ""
+
+
+def test_an_ipv6_network_with_a_host_gateway_is_refused() -> None:
+    """A network made elsewhere with IPv6 and a host gateway would give its members the host
+    (review pass 2)."""
+    from mpilot.core.types import RunId
+
+    attrs = {
+        "Internal": True,
+        "Labels": {"mpilot.run_id": "run-x"},
+        "Options": {"com.docker.network.bridge.gateway_mode_ipv4": "isolated"},
+        "EnableIPv6": True,
+        "IPAM": {"Config": [{"Subnet": "172.30.0.0/24"}, {"Subnet": "fd00::/64"}]},
+        "Containers": {},
+    }
+
+    class Client(_VersionClient):
+        def __init__(self) -> None:
+            super().__init__("29.10.0")
+            self.networks = _Networks(attrs)
+
+    manager = nw.EgressProxyManager(Client())  # type: ignore[arg-type]
+    with pytest.raises(nw.NetworkSetupError, match="IPv6 with a host gateway"):
+        manager._internal_subnet(RunId("run-x"), "n")
+    attrs["Options"] = {
+        **attrs["Options"],
+        "com.docker.network.bridge.gateway_mode_ipv6": "isolated",
+    }  # type: ignore[dict-item]
+    assert manager._internal_subnet(RunId("run-x"), "n") == "172.30.0.0/24"

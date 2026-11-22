@@ -19,7 +19,7 @@ Set up once with `bash scripts/setup-dev.sh`, then verify with `bash scripts/che
 | git | any recent | Phase 0 | VCS | Ubuntu (present) |
 | uv | ≥ 0.13 | Phase 1 | Python toolchain, venv, lockfile | present (`~/.local/bin`) |
 | Python | 3.12 | Phase 1 | Project language (SPEC §15) | system / `uv python install 3.12` |
-| Docker Engine + buildx + compose | current stable | Phase 2 | Sandbox (§9.3); compose for self-hosted Langfuse (Phase 7) | `setup-dev.sh` |
+| Docker Engine + buildx + compose | **28.0 or later** (isolated gateway mode for run networks; mpilot refuses older engines), current stable | Phase 2 | Sandbox (§9.3); compose for self-hosted Langfuse (Phase 7) | `setup-dev.sh` |
 | gVisor `runsc` | current release | Phase 2 | Default sandbox runtime on Linux (§9.2). If it fails on the WSL kernel, use runc with a recorded warning (NFR-10) | `setup-dev.sh` |
 | GitHub CLI `gh` | current | Phase 4 | Creating test repos/forks, checking PATs by hand. The product itself uses githubkit + a fine-grained PAT (§11.6), not `gh` | `setup-dev.sh` |
 | gitleaks | ≥ 8.18 | Phase 6 | Secret scanning of diffs, PR bodies, model inputs (§11.3) | `setup-dev.sh` |

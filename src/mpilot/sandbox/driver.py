@@ -5,8 +5,14 @@ Scope (P2-02, P2-03). Built here: runtime detection (gVisor `runsc`, else `runc`
 warning), `create` with the §9.3 hardening and limits, `exec` with output tails, timeouts and
 cancellation, `frozen()` (P2-03), `export_workspace`/`restore` (P2-04), the disk limit and the
 `/tmp` cap (P2-05, D6), `destroy`, `reap`. Owned by later tasks, and refused with
-`NotImplementedError` until then: `NetworkMode.REGISTRY` and the install container (P2-09),
-and `CacheMode.HASH_VERIFIED` (P3-13, final verification).
+`NotImplementedError` until then: `CacheMode.HASH_VERIFIED` (P3-13, final verification).
+
+Install containers (P2-09, A7): an `exec(..., network=REGISTRY)` runs in a fresh install
+container: same image, runtime, user, limits and workspace mount as the work container, the
+package cache read-write, on the run's internal network (created on first use, isolated
+gateway, removed by `destroy`/`reap`), whose only other member is a fresh egress proxy started
+for this command. Afterwards the install container and the proxy are removed and verified
+gone, and the proxy's log is kept in `DockerSandbox.last_egress`. Needs `DockerDriver(egress=)`.
 
 Package caches (P2-07b, `sandbox/cache.py`): with a `cache_root`, a work container gets its
 cache at `/cache`, read-only, with the package managers pointed at it; a fresh cache is created
@@ -33,7 +39,7 @@ import secrets
 import stat
 import threading
 import time
-from collections.abc import AsyncIterator, Awaitable, Mapping, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass
 from enum import StrEnum
@@ -68,14 +74,20 @@ from mpilot.sandbox.cache import (
     check_key,
 )
 from mpilot.sandbox.disk import DISK_POLL_S, GIB, human_bytes, tmpfs_options
+from mpilot.sandbox.labels import LABEL_ROLE, LABEL_RUN, ROLE_INSTALL, ROLE_PROXY, ROLE_WORK
+from mpilot.sandbox.network import (
+    EgressRecord,
+    EgressSetup,
+    ProxyHandle,
+    create_internal_network,
+    proxy_env,
+    remove_network,
+    require_members,
+)
 from mpilot.sandbox.workspace import HostWorkspace
 
 _T = TypeVar("_T")
 
-LABEL_RUN: Final = "mpilot.run_id"
-LABEL_ROLE: Final = "mpilot.role"
-ROLE_WORK: Final = "work"
-ROLE_INSTALL: Final = "install"  # P2-09's install containers carry this role
 
 #: The only variables a caller (or a `SandboxSpec`) may put in a container's environment
 #: (§9.3 Secrets: "Env vars are passed into the sandbox only from an allowlist, for every
@@ -245,6 +257,9 @@ class _Stream:
             self.finished.set_result(None)
 
 
+_InstallFactory = Callable[[str, Mapping[str, str]], Awaitable["DockerSandbox"]]
+
+
 @dataclass(frozen=True)
 class _CachePlan:
     """The cache directory one sandbox mounts, and whether it owns (and removes) it."""
@@ -270,6 +285,8 @@ class DockerSandbox:
         tail_bytes: int = DEFAULT_TAIL_BYTES,
         cache: _CachePlan | None = None,
         cache_store: CacheStore | None = None,
+        egress: EgressSetup | None = None,
+        make_install: _InstallFactory | None = None,
     ) -> None:
         self._client = client
         self._container_id = container_id
@@ -284,6 +301,14 @@ class DockerSandbox:
         self._cache = cache
         self._cache_store = cache_store
         self._cache_meter = HostWorkspace(cache.path) if cache is not None else None
+        self._egress = egress
+        self._make_install = make_install
+        self._network: str | None = None  # the run's internal network, made on first REGISTRY
+        #: One install at a time per sandbox: a second `REGISTRY` command waits for the first
+        #: (its network may hold only one proxy and one install container).
+        self._install_lock = asyncio.Lock()
+        #: What the egress proxy saw during the last `REGISTRY` command (None before one).
+        self.last_egress: EgressRecord | None = None
         self._runtime = runtime
         self._warnings = list(warnings)
         self._destroyed = False
@@ -535,8 +560,11 @@ class DockerSandbox:
     ) -> ExecResult:
         if self._destroyed:
             raise RuntimeError("the sandbox was destroyed")
-        if network is NetworkMode.REGISTRY:
-            raise NotImplementedError("registry-mode exec needs the install container (P2-09)")
+        if network is NetworkMode.REGISTRY and (self._egress is None or self._make_install is None):
+            raise RuntimeError(
+                "REGISTRY commands need an egress proxy: create the driver with "
+                "DockerDriver(egress=EgressSetup(...))"
+            )
         if not argv or not all(isinstance(a, str) and a for a in argv):
             raise ValueError("argv must be a non-empty list of non-empty strings")
         if timeout_s <= 0:
@@ -553,9 +581,123 @@ class DockerSandbox:
         self._require_exec_allowed()
         self._active += 1
         try:
+            if network is NetworkMode.REGISTRY:
+                return await self._exec_registry(list(argv), timeout_s, cwd, env or {})
             return await self._exec_counted(list(argv), timeout_s, cwd, env or {})
         finally:
             self._active -= 1
+
+    async def _exec_registry(
+        self, argv: list[str], timeout_s: int, cwd: str, env: Mapping[str, str]
+    ) -> ExecResult:
+        """One install: a fresh proxy and install container on the run's internal network,
+        both removed (and verified gone) before this returns, even on error or cancellation.
+        Counted in `_active` by the caller, so `frozen()` refuses meanwhile.
+
+        Every step that creates something (the network, the proxy, the install container)
+        runs as a tracked task the caller only waits on through a shield: a cancellation
+        while Docker is still creating it cannot lose the handle, and the cleanup waits for
+        each step to finish before removing what it made."""
+        async with self._install_lock:
+            return await self._exec_registry_locked(argv, timeout_s, cwd, env)
+
+    async def _exec_registry_locked(
+        self, argv: list[str], timeout_s: int, cwd: str, env: Mapping[str, str]
+    ) -> ExecResult:
+        # Checked again now that the lock is held: while this install waited, the one before
+        # it may have ended (its cleanup is waited out here) or the sandbox been destroyed
+        # (refused here, so no container is started on a destroyed sandbox's workspace).
+        await self._drain_pending()
+        self._require_exec_allowed()
+        egress, make_install = self._egress, self._make_install
+        if egress is None or make_install is None:  # exec checked this already
+            raise RuntimeError("REGISTRY commands need an egress proxy")
+        self.last_egress = None  # never a previous install's record (P2-09 review)
+        network = await asyncio.shield(self._background(self._run_network()))
+        starting = self._background(
+            egress.manager.start(
+                run_id=self._run_id,
+                internal_network=network,
+                settings=egress.settings,
+                image=egress.proxy_image,
+            )
+        )
+        creating: asyncio.Task[DockerSandbox] | None = None
+        failure: BaseException | None = None
+        try:
+            proxy = await asyncio.shield(starting)
+            await asyncio.to_thread(require_members, self._client, network, {proxy.container_id})
+            creating = self._background(make_install(network, proxy_env(proxy)))
+            install = await asyncio.shield(creating)
+            # The install container runs with this sandbox's current tunables.
+            install.tail_bytes = self.tail_bytes
+            install.disk_poll_s = self.disk_poll_s
+            install.disk_limit_bytes = self.disk_limit_bytes
+            await asyncio.to_thread(
+                require_members, self._client, network, {proxy.container_id, install.container_id}
+            )
+            return await install._exec_counted(argv, timeout_s, cwd, env)
+        except BaseException as exc:
+            failure = exc
+            raise
+        finally:
+            # Shielded and tracked: a cancelled caller cannot leave either container behind,
+            # and `frozen()` and the next `exec` wait for this to finish.
+            try:
+                await asyncio.shield(self._background(self._end_install(starting, creating)))
+            except Exception as cleanup_error:
+                if not isinstance(failure, asyncio.CancelledError):
+                    raise  # fail closed: a result after a failed cleanup is not returned
+                # A cancellation stays a cancellation (asyncio.timeout, TaskGroup rely on it).
+                failure.add_note(f"[mpilot] cleaning up the install failed: {cleanup_error}")
+
+    async def _run_network(self) -> str:
+        """The run's internal network, created on first use. The attribute is set inside this
+        task, so `destroy` finds the network even if the caller was cancelled meanwhile."""
+        if self._destroyed or self._state is _State.BROKEN:
+            raise RuntimeError("the sandbox was destroyed (or is broken): no new run network")
+        if self._network is None:
+            self._network = await asyncio.to_thread(
+                create_internal_network, self._client, self._run_id
+            )
+        return self._network
+
+    async def _end_install(
+        self,
+        starting: asyncio.Task[ProxyHandle],
+        creating: asyncio.Task[DockerSandbox] | None,
+    ) -> None:
+        egress = self._egress
+        if egress is None:
+            raise RuntimeError("REGISTRY commands need an egress proxy")
+        errors: list[BaseException] = []
+        # Creation steps that failed removed their own container and are reported by the
+        # caller; only what was actually created is cleaned up here.
+        install = await _outcome(creating) if creating is not None else None
+        proxy = await _outcome(starting)
+        if install is not None:
+            try:
+                await install._drain_pending()
+                await install.destroy()  # verified gone
+            except Exception as exc:  # keep going: the proxy must go too
+                errors.append(exc)
+        if proxy is not None:
+            try:
+                events = tuple(await asyncio.to_thread(egress.manager.events, proxy))
+                self.last_egress = EgressRecord(
+                    proxy=proxy,
+                    events=events,
+                    log_truncated=not any(e.event == "ready" for e in events),
+                )
+            except Exception as exc:
+                errors.append(exc)
+            try:
+                await egress.manager.stop(proxy)  # verified gone
+            except Exception as exc:
+                errors.append(exc)
+        if errors:
+            detail = "; ".join(f"{type(e).__name__}: {e}" for e in errors)
+            raise RuntimeError(f"cleaning up after an install failed: {detail}") from errors[0]
 
     def _require_exec_allowed(self) -> None:
         if self._destroyed:
@@ -796,6 +938,16 @@ class DockerSandbox:
 
     # -- destroy
 
+    def _remove_run_network(self, network: str) -> None:
+        """Remove what is left on the run's network (an install or proxy whose cleanup failed),
+        then the network itself; verified gone."""
+        api = self._client.api
+        flt = {"label": [f"{LABEL_RUN}={self._run_id}"]}
+        for found in api.containers(all=True, filters=flt):
+            if found.get("Labels", {}).get(LABEL_ROLE) in (ROLE_INSTALL, ROLE_PROXY):
+                _force_remove(api, found["Id"])
+        remove_network(self._client, network)
+
     async def destroy(self) -> None:
         if self._destroyed:
             return
@@ -813,6 +965,10 @@ class DockerSandbox:
             raise RuntimeError(f"container {self._name} is still there after removal")
 
         await asyncio.to_thread(remove)
+        await self._drain_pending()  # an install's cleanup still running
+        if self._network is not None:
+            await asyncio.to_thread(self._remove_run_network, self._network)
+            self._network = None
         self._destroyed = True
         if self._cache is not None and self._cache.fresh and self._cache_store is not None:
             # After the container is verified gone: nothing can be writing to it any more.
@@ -835,6 +991,14 @@ _BROKEN: Final = (
 
 class _ScriptFailedError(MpilotError):
     """A driver-owned script in the container did not exit 0 in time."""
+
+
+async def _outcome[T](task: asyncio.Task[T]) -> T | None:
+    """The task's result once it has finished, or None if it failed or was cancelled."""
+    await asyncio.wait({task})
+    if task.cancelled() or task.exception() is not None:
+        return None
+    return task.result()
 
 
 async def _finished(task: asyncio.Task[Any]) -> None:
@@ -894,6 +1058,7 @@ class DockerDriver:
         gid: int | None = None,
         tail_bytes: int = DEFAULT_TAIL_BYTES,
         cache_root: Path | None = None,
+        egress: EgressSetup | None = None,
     ) -> None:
         self._uid = os.getuid() if uid is None else uid
         self._gid = os.getgid() if gid is None else gid
@@ -907,6 +1072,8 @@ class DockerDriver:
         self._tail_bytes = tail_bytes
         #: `runs/cache/`. Without it no cache is mounted (the lifecycle tests run that way).
         self._cache_store = CacheStore(cache_root) if cache_root is not None else None
+        #: The egress proxy for `REGISTRY` commands; without it they are refused.
+        self._egress = egress
 
     # -- runtime detection
 
@@ -988,14 +1155,14 @@ class DockerDriver:
         if spec.prefer_runtime is ContainerRuntime.RUNC:
             warnings.append("runc was requested: the container shares the host kernel (NFR-10)")
             container = self._start(spec, self._runc, plan)
-            runtime = ContainerRuntime.RUNC
+            runtime, runtime_name = ContainerRuntime.RUNC, self._runc
         else:
             info = self.detect_runtime()
             warnings.extend(info.warnings)
             if info.runtime is ContainerRuntime.RUNSC:
                 try:
                     container = self._start(spec, self._runsc, plan)
-                    runtime = ContainerRuntime.RUNSC
+                    runtime, runtime_name = ContainerRuntime.RUNSC, self._runsc
                 except APIError as exc:
                     if not _RUNTIME_FAILURE.search(str(exc)):
                         raise
@@ -1004,10 +1171,10 @@ class DockerDriver:
                         f"to runc, which shares the host kernel (NFR-10): {exc.explanation or exc}"
                     )
                     container = self._start(spec, self._runc, plan)
-                    runtime = ContainerRuntime.RUNC
+                    runtime, runtime_name = ContainerRuntime.RUNC, self._runc
             else:
                 container = self._start(spec, self._runc, plan)
-                runtime = ContainerRuntime.RUNC
+                runtime, runtime_name = ContainerRuntime.RUNC, self._runc
         sandbox = DockerSandbox(
             self._client,
             str(container.id),
@@ -1020,6 +1187,8 @@ class DockerDriver:
             tail_bytes=self._tail_bytes,
             cache=plan,
             cache_store=self._cache_store,
+            egress=self._egress,
+            make_install=self._install_factory(spec, runtime_name, runtime, plan, warnings),
         )
         try:
             sandbox._setup()
@@ -1029,16 +1198,62 @@ class DockerDriver:
             raise
         return sandbox
 
-    def _start(self, spec: SandboxSpec, runtime_name: str, plan: _CachePlan | None) -> Any:
-        """Create and start the work container; on failure leave nothing behind."""
-        name = f"mpilot-work-{secrets.token_hex(6)}"
+    def _install_factory(
+        self,
+        spec: SandboxSpec,
+        runtime_name: str,
+        runtime: ContainerRuntime,
+        plan: _CachePlan | None,
+        warnings: Sequence[str],
+    ) -> _InstallFactory:
+        async def make(network: str, extra_env: Mapping[str, str]) -> DockerSandbox:
+            container = await asyncio.to_thread(
+                self._start, spec, runtime_name, plan, install_network=network, extra_env=extra_env
+            )
+            # The cache store is not passed: a fresh cache belongs to the work sandbox, which
+            # removes it; the install container only writes into it. The meter still counts it.
+            return DockerSandbox(
+                self._client,
+                str(container.id),
+                name=str(container.name),
+                run_id=spec.run_id,
+                workspace=spec.workspace_host_path,
+                disk_limit_bytes=spec.limits.disk_gb * GIB,
+                runtime=runtime,
+                warnings=warnings,
+                tail_bytes=self._tail_bytes,
+                cache=plan,
+            )
+
+        return make
+
+    def _start(
+        self,
+        spec: SandboxSpec,
+        runtime_name: str,
+        plan: _CachePlan | None,
+        *,
+        install_network: str | None = None,
+        extra_env: Mapping[str, str] | None = None,
+    ) -> Any:
+        """Create and start the work container (no network), or with `install_network` an
+        install container on that network; on failure leave nothing behind. Both get the same
+        image, runtime, user, limits and workspace; only the install container gets the cache
+        read-write and `extra_env` (the proxy variables)."""
+        install = install_network is not None
+        name = f"mpilot-{'install' if install else 'work'}-{secrets.token_hex(6)}"
         limits = spec.limits
         volumes = {str(spec.workspace_host_path): {"bind": "/workspace", "mode": "rw"}}
         environment = {**spec.env, "HOME": CONTAINER_HOME}
+        role = CacheRole.INSTALL if install else CacheRole.WORK
         if plan is not None:
-            # Read-only here; only an install container mounts it read-write (§9.3).
-            volumes.update(cache_volume(plan.path, CacheRole.WORK))
-            environment.update(cache_env(CacheRole.WORK))
+            # Read-only in the work container; only an install container mounts it read-write.
+            volumes.update(cache_volume(plan.path, role))
+            environment.update(cache_env(role))
+        environment.update(extra_env or {})
+        networking: dict[str, Any] = (
+            {"network": install_network} if install else {"network_mode": "none"}
+        )
         container = None
         try:
             container = self._client.containers.create(
@@ -1054,7 +1269,7 @@ class DockerDriver:
                 cap_drop=["ALL"],
                 security_opt=["no-new-privileges"],
                 privileged=False,
-                network_mode="none",
+                **networking,
                 pids_limit=limits.pids,
                 mem_limit=limits.memory_gb * 1024**3,
                 memswap_limit=limits.memory_gb * 1024**3,
@@ -1062,7 +1277,10 @@ class DockerDriver:
                 tmpfs={CONTAINER_HOME: tmpfs_options(limits.memory_gb)},
                 volumes=volumes,
                 log_config=LogConfig(type=LogConfig.types.NONE),
-                labels={LABEL_RUN: str(spec.run_id), LABEL_ROLE: ROLE_WORK},
+                labels={
+                    LABEL_RUN: str(spec.run_id),
+                    LABEL_ROLE: ROLE_INSTALL if install else ROLE_WORK,
+                },
                 detach=True,
             )
             container.start()
