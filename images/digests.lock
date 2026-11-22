@@ -1,0 +1,162 @@
+{
+  "images": {
+    "node:18": {
+      "base": "node:18-bookworm-slim@sha256:f9ab18e354e6855ae56ef2b290dd225c1e51a564f87584b9bd21dd651838830e",
+      "build_args": {
+        "NODE_MAJOR": "18"
+      },
+      "dockerfile_sha256": "2afd5dfaff79256dfc2efef97db231ad543d893e6cca27bf6871b352f35f79a1",
+      "tag": "mpilot/node:18",
+      "tools": {
+        "dpkg:git": "1:2.39.5-0+deb12u3",
+        "dpkg:ripgrep": "13.0.0-4+b2",
+        "git": "git version 2.39.5",
+        "node": "v18.20.8",
+        "npm": "10.8.2",
+        "pnpm": "10.34.9",
+        "ripgrep": "ripgrep 13.0.0",
+        "tree-sitter": "tree-sitter 0.25.10 (da6fe9beb4f7f67beb75914ca8e0d48ae48d6406)",
+        "yarn": "1.22.22"
+      }
+    },
+    "node:20": {
+      "base": "node:20-bookworm-slim@sha256:2cf067cfed83d5ea958367df9f966191a942351a2df77d6f0193e162b5febfc0",
+      "build_args": {
+        "NODE_MAJOR": "20"
+      },
+      "dockerfile_sha256": "2afd5dfaff79256dfc2efef97db231ad543d893e6cca27bf6871b352f35f79a1",
+      "tag": "mpilot/node:20",
+      "tools": {
+        "dpkg:git": "1:2.39.5-0+deb12u3",
+        "dpkg:ripgrep": "13.0.0-4+b2",
+        "git": "git version 2.39.5",
+        "node": "v20.20.2",
+        "npm": "10.8.2",
+        "pnpm": "10.34.9",
+        "ripgrep": "ripgrep 13.0.0",
+        "tree-sitter": "tree-sitter 0.25.10 (da6fe9beb4f7f67beb75914ca8e0d48ae48d6406)",
+        "yarn": "1.22.22"
+      }
+    },
+    "node:22": {
+      "base": "node:22-bookworm-slim@sha256:e9f565d32859f0cbfb52125eafe8be39390f24dac302dc3cdf566e8ba3ab21ee",
+      "build_args": {
+        "NODE_MAJOR": "22"
+      },
+      "dockerfile_sha256": "2afd5dfaff79256dfc2efef97db231ad543d893e6cca27bf6871b352f35f79a1",
+      "tag": "mpilot/node:22",
+      "tools": {
+        "dpkg:git": "1:2.39.5-0+deb12u3",
+        "dpkg:ripgrep": "13.0.0-4+b2",
+        "git": "git version 2.39.5",
+        "node": "v22.23.5",
+        "npm": "10.9.9",
+        "pnpm": "10.34.9",
+        "ripgrep": "ripgrep 13.0.0",
+        "tree-sitter": "tree-sitter 0.25.10 (da6fe9beb4f7f67beb75914ca8e0d48ae48d6406)",
+        "yarn": "1.22.22"
+      }
+    },
+    "python:3.10": {
+      "base": "python:3.10-slim-bookworm@sha256:5be5aaecb962a41567bc8041f1e9e3432cb085b037fe057f9a562630b2e4b370",
+      "build_args": {
+        "PYTHON_VERSION": "3.10"
+      },
+      "dockerfile_sha256": "2ae1ec590c3d3a9d702839558f28e82c41cbb6885d30a96b490775bf8ce79827",
+      "tag": "mpilot/python:3.10",
+      "tools": {
+        "dpkg:git": "1:2.39.5-0+deb12u3",
+        "dpkg:ripgrep": "13.0.0-4+b2",
+        "git": "git version 2.39.5",
+        "pdm": "PDM, version 2.26.9",
+        "pip": "pip 23.0.1 from /usr/local/lib/python3.10/site-packages/pip (python 3.10)",
+        "poetry": "Poetry (version 2.2.1)",
+        "python": "Python 3.10.22",
+        "ripgrep": "ripgrep 13.0.0",
+        "tree-sitter": "tree-sitter 0.25.10 (da6fe9beb4f7f67beb75914ca8e0d48ae48d6406)",
+        "uv": "uv 0.13.9 (x86_64-unknown-linux-gnu)"
+      }
+    },
+    "python:3.11": {
+      "base": "python:3.11-slim-bookworm@sha256:a83ba18aef0f865b1a4a611c2cf460fe446f2795673bbb9fe43be570439e3b39",
+      "build_args": {
+        "PYTHON_VERSION": "3.11"
+      },
+      "dockerfile_sha256": "2ae1ec590c3d3a9d702839558f28e82c41cbb6885d30a96b490775bf8ce79827",
+      "tag": "mpilot/python:3.11",
+      "tools": {
+        "dpkg:git": "1:2.39.5-0+deb12u3",
+        "dpkg:ripgrep": "13.0.0-4+b2",
+        "git": "git version 2.39.5",
+        "pdm": "PDM, version 2.26.9",
+        "pip": "pip 24.0 from /usr/local/lib/python3.11/site-packages/pip (python 3.11)",
+        "poetry": "Poetry (version 2.2.1)",
+        "python": "Python 3.11.18",
+        "ripgrep": "ripgrep 13.0.0",
+        "tree-sitter": "tree-sitter 0.25.10 (da6fe9beb4f7f67beb75914ca8e0d48ae48d6406)",
+        "uv": "uv 0.13.9 (x86_64-unknown-linux-gnu)"
+      }
+    },
+    "python:3.12": {
+      "base": "python:3.12-slim-bookworm@sha256:935c3c5b12357a7e10caa9c1e6ca5692344d97cf229832ef584be2cec9fc03df",
+      "build_args": {
+        "PYTHON_VERSION": "3.12"
+      },
+      "dockerfile_sha256": "2ae1ec590c3d3a9d702839558f28e82c41cbb6885d30a96b490775bf8ce79827",
+      "tag": "mpilot/python:3.12",
+      "tools": {
+        "dpkg:git": "1:2.39.5-0+deb12u3",
+        "dpkg:ripgrep": "13.0.0-4+b2",
+        "git": "git version 2.39.5",
+        "pdm": "PDM, version 2.26.9",
+        "pip": "pip 25.0.1 from /usr/local/lib/python3.12/site-packages/pip (python 3.12)",
+        "poetry": "Poetry (version 2.2.1)",
+        "python": "Python 3.12.16",
+        "ripgrep": "ripgrep 13.0.0",
+        "tree-sitter": "tree-sitter 0.25.10 (da6fe9beb4f7f67beb75914ca8e0d48ae48d6406)",
+        "uv": "uv 0.13.9 (x86_64-unknown-linux-gnu)"
+      }
+    },
+    "python:3.13": {
+      "base": "python:3.13-slim-bookworm@sha256:a5a7017efc5969e00ae2b91c8eb0631049a569652aa4ffc4501769049ae45c72",
+      "build_args": {
+        "PYTHON_VERSION": "3.13"
+      },
+      "dockerfile_sha256": "2ae1ec590c3d3a9d702839558f28e82c41cbb6885d30a96b490775bf8ce79827",
+      "tag": "mpilot/python:3.13",
+      "tools": {
+        "dpkg:git": "1:2.39.5-0+deb12u3",
+        "dpkg:ripgrep": "13.0.0-4+b2",
+        "git": "git version 2.39.5",
+        "pdm": "PDM, version 2.26.9",
+        "pip": "pip 26.2.2 from /usr/local/lib/python3.13/site-packages/pip (python 3.13)",
+        "poetry": "Poetry (version 2.2.1)",
+        "python": "Python 3.13.18",
+        "ripgrep": "ripgrep 13.0.0",
+        "tree-sitter": "tree-sitter 0.25.10 (da6fe9beb4f7f67beb75914ca8e0d48ae48d6406)",
+        "uv": "uv 0.13.9 (x86_64-unknown-linux-gnu)"
+      }
+    },
+    "python:3.9": {
+      "base": "python:3.9-slim-bookworm@sha256:a02e9c5406c416c504d6c9a1a306ff4080c3173f1008d192f953bd20382a2d5c",
+      "build_args": {
+        "PYTHON_VERSION": "3.9"
+      },
+      "dockerfile_sha256": "2ae1ec590c3d3a9d702839558f28e82c41cbb6885d30a96b490775bf8ce79827",
+      "tag": "mpilot/python:3.9",
+      "tools": {
+        "dpkg:git": "1:2.39.5-0+deb12u3",
+        "dpkg:ripgrep": "13.0.0-4+b2",
+        "git": "git version 2.39.5",
+        "pdm": "PDM, version 2.26.9",
+        "pip": "pip 23.0.1 from /usr/local/lib/python3.9/site-packages/pip (python 3.9)",
+        "poetry": "Poetry (version 2.2.1)",
+        "python": "Python 3.9.25",
+        "ripgrep": "ripgrep 13.0.0",
+        "tree-sitter": "tree-sitter 0.25.10 (da6fe9beb4f7f67beb75914ca8e0d48ae48d6406)",
+        "uv": "uv 0.13.9 (x86_64-unknown-linux-gnu)"
+      }
+    }
+  },
+  "version": 1
+}

@@ -73,6 +73,7 @@ select = ["E", "F", "W", "I", "UP", "B", "SIM", "N", "RUF", "PT", "C4", "S", "T2
 "tests/unit/test_sandbox_freeze.py" = ["S101", "S103", "S105", "S106", "F811"]
 "tests/unit/test_sandbox_export.py" = ["S101", "S103", "S105", "S106", "F811"]
 "tests/unit/test_sandbox_disk.py" = ["S101", "S103", "S105", "S106", "S108", "F811"]  # S108: /tmp inside the container
+"tests/unit/test_images_docker.py" = ["S101", "S103", "S105", "S106", "S108", "F811"]  # S108: /tmp inside the container
 # Alembic revisions are generated, frozen snapshots; long constraint strings stay as emitted.
 "src/mpilot/models/migrations/versions/*.py" = ["E501"]
 

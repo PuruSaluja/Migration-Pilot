@@ -19,9 +19,16 @@ FROM base-${NODE_MAJOR} AS final
 # tree-sitter CLI: a pinned GitHub release binary, checked against its published SHA-256.
 # (Image builds may reach GitHub release tarballs; running containers never do.)
 ARG TARGETARCH
-ARG TREE_SITTER_VERSION=v0.27.2
-ARG TREE_SITTER_SHA256_AMD64=7ed56d152c52437397b9fcaa43cf341f49933cecc1ca291843f0d347c6e2cb3a
-ARG TREE_SITTER_SHA256_ARM64=34fcc5c4fa7bdd2058a2a45a03b6eb9a49b03a93b6d52ec750f99b1516d98d33
+ARG TREE_SITTER_VERSION=v0.25.10
+ARG TREE_SITTER_SHA256_AMD64=8283ddba69253c698f6e987ba0e2f9285e079c8db4d36ebe1394b5bb3a0ebdfd
+ARG TREE_SITTER_SHA256_ARM64=07fbff8ae0eeb0d3e496e14fc1a30dcc730cc2c97d70e601e5357f2e51958af5
+
+# Package managers (P2-07): npm and yarn classic ship with the base image; pnpm is installed
+# here at a pinned version so a work container with no network can still run it. Yarn berry
+# comes from the repo itself (.yarn/releases via .yarnrc.yml). pnpm must not try to download
+# a different version named by a repo's `packageManager` field, which would fail offline.
+ARG PNPM_VERSION=10.34.9
+ENV npm_config_manage_package_manager_versions=false
 
 # The sandbox user's uid must equal the host user's uid (§9.3); the driver also passes
 # --user uid:gid at run time, so this build arg only has to match for a clean /workspace owner.
@@ -44,6 +51,9 @@ RUN set -eux; \
     rm -f /tmp/tree-sitter.gz; \
     apt-get purge -y --auto-remove curl; \
     rm -rf /var/lib/apt/lists/*; \
+    npm install --global --no-audit --no-fund "pnpm@${PNPM_VERSION}"; \
+    npm cache clean --force; \
+    rm -rf /root/.npm; \
     # The official node image ships a `node` user at uid 1000; replace it with the sandbox user.
     userdel -r node; \
     groupadd --gid "${SANDBOX_GID}" sandbox; \

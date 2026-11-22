@@ -21,9 +21,18 @@ FROM base-${PYTHON_VERSION} AS final
 # tree-sitter CLI: a pinned GitHub release binary, checked against its published SHA-256.
 # (Image builds may reach GitHub release tarballs; running containers never do.)
 ARG TARGETARCH
-ARG TREE_SITTER_VERSION=v0.27.2
-ARG TREE_SITTER_SHA256_AMD64=7ed56d152c52437397b9fcaa43cf341f49933cecc1ca291843f0d347c6e2cb3a
-ARG TREE_SITTER_SHA256_ARM64=34fcc5c4fa7bdd2058a2a45a03b6eb9a49b03a93b6d52ec750f99b1516d98d33
+ARG TREE_SITTER_VERSION=v0.25.10
+ARG TREE_SITTER_SHA256_AMD64=8283ddba69253c698f6e987ba0e2f9285e079c8db4d36ebe1394b5bb3a0ebdfd
+ARG TREE_SITTER_SHA256_ARM64=07fbff8ae0eeb0d3e496e14fc1a30dcc730cc2c97d70e601e5357f2e51958af5
+
+# Package managers (P2-07): pip ships with the base image. uv is a pinned release binary
+# checked against its published SHA-256; Poetry and PDM are pinned PyPI releases, each in its
+# own venv under /opt/tools so their dependencies never touch the repo's environment.
+ARG UV_VERSION=0.13.9
+ARG UV_SHA256_AMD64=a7fbaff2b9a271d85c1bdb540941090fd1ce011797b4abeb48e4dcd39c2471d5
+ARG UV_SHA256_ARM64=0797542018e541a9288855df555c8077eed06f7a47d206362030480e8ecc9f3d
+ARG POETRY_VERSION=2.2.1
+ARG PDM_VERSION=2.26.9
 
 # The sandbox user's uid must equal the host user's uid (§9.3); the driver also passes
 # --user uid:gid at run time, so this build arg only has to match for a clean /workspace owner.
@@ -32,8 +41,10 @@ ARG SANDBOX_GID=1000
 
 RUN set -eux; \
     case "${TARGETARCH:-amd64}" in \
-        amd64) ts_arch=x64;   ts_sha="${TREE_SITTER_SHA256_AMD64}" ;; \
-        arm64) ts_arch=arm64; ts_sha="${TREE_SITTER_SHA256_ARM64}" ;; \
+        amd64) ts_arch=x64;   ts_sha="${TREE_SITTER_SHA256_AMD64}"; \
+               uv_arch=x86_64;  uv_sha="${UV_SHA256_AMD64}" ;; \
+        arm64) ts_arch=arm64; ts_sha="${TREE_SITTER_SHA256_ARM64}"; \
+               uv_arch=aarch64; uv_sha="${UV_SHA256_ARM64}" ;; \
         *) echo "unsupported architecture: ${TARGETARCH}" >&2; exit 1 ;; \
     esac; \
     apt-get update; \
@@ -44,8 +55,21 @@ RUN set -eux; \
     gunzip -c /tmp/tree-sitter.gz > /usr/local/bin/tree-sitter; \
     chmod 0755 /usr/local/bin/tree-sitter; \
     rm -f /tmp/tree-sitter.gz; \
+    curl -fsSL --retry 3 -o /tmp/uv.tar.gz \
+        "https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/uv-${uv_arch}-unknown-linux-gnu.tar.gz"; \
+    echo "${uv_sha}  /tmp/uv.tar.gz" | sha256sum -c -; \
+    tar -xzf /tmp/uv.tar.gz -C /tmp "uv-${uv_arch}-unknown-linux-gnu/uv"; \
+    install -m 0755 "/tmp/uv-${uv_arch}-unknown-linux-gnu/uv" /usr/local/bin/uv; \
+    rm -rf /tmp/uv.tar.gz "/tmp/uv-${uv_arch}-unknown-linux-gnu"; \
     apt-get purge -y --auto-remove curl; \
     rm -rf /var/lib/apt/lists/*; \
+    for tool in poetry pdm; do \
+        python -m venv "/opt/tools/${tool}"; \
+        version="$(case ${tool} in poetry) echo "${POETRY_VERSION}";; pdm) echo "${PDM_VERSION}";; esac)"; \
+        "/opt/tools/${tool}/bin/pip" install --no-cache-dir --disable-pip-version-check \
+            "${tool}==${version}"; \
+        ln -s "/opt/tools/${tool}/bin/${tool}" "/usr/local/bin/${tool}"; \
+    done; \
     groupadd --gid "${SANDBOX_GID}" sandbox; \
     useradd --uid "${SANDBOX_UID}" --gid "${SANDBOX_GID}" --no-create-home \
         --home-dir /tmp --shell /bin/bash sandbox; \
