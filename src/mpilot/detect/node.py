@@ -34,6 +34,7 @@ from typing import Any, Final
 import yaml
 
 from mpilot.core.errors import InputError
+from mpilot.detect.common import Detected, JunitInvocation, check_output_path
 from mpilot.detect.semver import RangeSyntaxError, satisfies
 from mpilot.policy.gate import TreeReader
 
@@ -63,7 +64,6 @@ _COVERS_WORKSPACES: Final = re.compile(
 )
 _SAFE_SEGMENT: Final = re.compile(r"[A-Za-z0-9_@][A-Za-z0-9_.@+-]*")
 _SAFE_NAME: Final = re.compile(r"(?:@[a-z0-9][a-z0-9._~-]*/)?[a-z0-9][a-z0-9._~-]*")
-_SAFE_OUTPUT: Final = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_./-]*")
 _NODE_SPEC: Final = re.compile(r"v?(\d{1,3})(?:\.\d{1,5}){0,2}")
 _LTS_NAMES: Final[Mapping[str, int]] = {
     "argon": 4, "boron": 6, "carbon": 8, "dubnium": 10, "erbium": 12, "fermium": 14,
@@ -78,22 +78,10 @@ class NodeDetectionError(InputError):
 
 
 @dataclass(frozen=True)
-class Detected:
-    value: str
-    source: str  # where it came from: a file, `file#field`, or "default"
-
-
-@dataclass(frozen=True)
 class WorkspacePackage:
     dir: str  # repo-relative, validated
     name: str | None  # None when absent or not a plain npm package name
     has_test_script: bool
-
-
-@dataclass(frozen=True)
-class JunitInvocation:
-    cmd: str  # the test command with the reporter flags added
-    output_path: str  # where the XML will be, relative to the workspace root
 
 
 @dataclass(frozen=True)
@@ -357,13 +345,7 @@ def junit_invocation(detection: NodeDetection, output_path: str) -> JunitInvocat
     (only environment variables, which the sandbox does not pass), so for jest the XML is
     written to jest-junit's default, `junit.xml`, and that is what `output_path` reports.
     """
-    if (
-        not _SAFE_OUTPUT.fullmatch(output_path)
-        or ".." in output_path.split("/")
-        or output_path.endswith("/")
-        or len(output_path) > 200
-    ):
-        raise ValueError(f"output path must be a plain relative path: {output_path!r}")
+    check_output_path(output_path)
     runner = detection.junit_runner_for_args
     if runner is None or detection.test_cmd is None:
         return None

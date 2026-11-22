@@ -53,6 +53,7 @@ Before pinning, re-check every version and API at build time (SPEC Appendix A).
 | `githubkit` | GitHub REST adapter (§11.6) |
 | `opentelemetry-api`, `opentelemetry-sdk`, `opentelemetry-exporter-otlp` | Tracing → Langfuse via OTLP (NFR-7) |
 | `pyyaml` | `codemods/registry.yaml`, `bench/suites/v1.yaml`, CI-config parsing |
+| `packaging` | PEP 440 version specifiers for `requires-python` (Python env detection, P2-11) |
 | `httpx` | Registry/changelog fetches (knowledge layer) |
 | `pathspec` | gitignore matching for the host walk's artifact rules (§9.5 Diff; P2-01) |
 

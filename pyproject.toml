@@ -28,6 +28,7 @@ dependencies = [
     "httpx",
     "jsonschema>=4.26.0",
     "pathspec>=1.1",
+    "packaging>=24",
 ]
 
 [project.scripts]
@@ -73,6 +74,9 @@ select = ["E", "F", "W", "I", "UP", "B", "SIM", "N", "RUF", "PT", "C4", "S", "T2
 "tests/unit/test_sandbox_freeze.py" = ["S101", "S103", "S105", "S106", "F811"]
 "tests/unit/test_sandbox_export.py" = ["S101", "S103", "S105", "S106", "F811"]
 "tests/unit/test_sandbox_disk.py" = ["S101", "S103", "S105", "S106", "S108", "F811"]  # S108: /tmp inside the container
+# Detection tests are tables of fake repo files; their lines are data, not prose.
+"tests/unit/test_detect_python.py" = ["S101", "S103", "S105", "S106", "E501"]
+"tests/unit/test_detect_python_docker.py" = ["S101", "S103", "S105", "S106", "S108", "F811", "E501"]
 "tests/unit/test_install_docker.py" = ["S101", "S103", "S105", "S106", "S108", "F811"]
 "tests/unit/test_network_docker.py" = ["S101", "S103", "S105", "S106", "F811"]
 "tests/unit/test_cache_docker.py" = ["S101", "S103", "S105", "S106", "S108", "F811"]  # S108: /tmp inside the container

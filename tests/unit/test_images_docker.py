@@ -151,6 +151,30 @@ def test_python_images_run_the_requested_version(
             assert out.startswith(f"Python {spec.version}."), (spec.key, out)
 
 
+PYTHON_SPECS = [s for s in SANDBOX if s.ecosystem.name == "python"]
+
+
+@pytest.mark.parametrize("spec", PYTHON_SPECS, ids=_ids(PYTHON_SPECS))
+def test_pdm_runs_with_the_dependency_versions_it_was_tested_with(
+    spec: ImageSpec, built: dict[str, ImageSpec], client: docker.DockerClient
+) -> None:
+    """Without the `locked` extra pip took the newest hishel, which PDM 2.26 cannot use:
+    `pdm lock` and `pdm install` crashed with "no attribute SyncSqliteStorage" (P2-11)."""
+    code, out, err = in_image(
+        client,
+        spec.tag,
+        [
+            "/opt/tools/pdm/bin/python",
+            "-c",
+            "import hishel; print(hishel.SyncSqliteStorage.__name__)",
+        ],
+    )
+    assert (code, out.strip()) == (0, "SyncSqliteStorage"), err
+    code, out, err = in_image(client, spec.tag, ["pdm", "config", "check_update"])
+    assert (code, out.strip()) == (0, "False"), "the update check cannot work offline"
+    assert err == ""
+
+
 def test_poetry_and_pdm_do_not_share_the_repos_python_packages(
     built: dict[str, ImageSpec],
     client: docker.DockerClient,

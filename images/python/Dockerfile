@@ -28,11 +28,16 @@ ARG TREE_SITTER_SHA256_ARM64=07fbff8ae0eeb0d3e496e14fc1a30dcc730cc2c97d70e601e53
 # Package managers (P2-07): pip ships with the base image. uv is a pinned release binary
 # checked against its published SHA-256; Poetry and PDM are pinned PyPI releases, each in its
 # own venv under /opt/tools so their dependencies never touch the repo's environment.
+# PDM is installed with its `locked` extra, which pins every dependency to the versions it was
+# tested with: without it pip picks the newest hishel, whose API PDM 2.26 does not know
+# (`pdm lock` and `pdm install` crash with "no attribute SyncSqliteStorage"; found in P2-11).
+# Its update check cannot work offline and only prints a notice, so it is off.
 ARG UV_VERSION=0.13.9
 ARG UV_SHA256_AMD64=a7fbaff2b9a271d85c1bdb540941090fd1ce011797b4abeb48e4dcd39c2471d5
 ARG UV_SHA256_ARM64=0797542018e541a9288855df555c8077eed06f7a47d206362030480e8ecc9f3d
 ARG POETRY_VERSION=2.2.1
 ARG PDM_VERSION=2.26.9
+ENV PDM_CHECK_UPDATE=false
 
 # The sandbox user's uid must equal the host user's uid (§9.3); the driver also passes
 # --user uid:gid at run time, so this build arg only has to match for a clean /workspace owner.
@@ -65,9 +70,8 @@ RUN set -eux; \
     rm -rf /var/lib/apt/lists/*; \
     for tool in poetry pdm; do \
         python -m venv "/opt/tools/${tool}"; \
-        version="$(case ${tool} in poetry) echo "${POETRY_VERSION}";; pdm) echo "${PDM_VERSION}";; esac)"; \
-        "/opt/tools/${tool}/bin/pip" install --no-cache-dir --disable-pip-version-check \
-            "${tool}==${version}"; \
+        spec="$(case ${tool} in poetry) echo "poetry==${POETRY_VERSION}";; pdm) echo "pdm[locked]==${PDM_VERSION}";; esac)"; \
+        "/opt/tools/${tool}/bin/pip" install --no-cache-dir --disable-pip-version-check "${spec}"; \
         ln -s "/opt/tools/${tool}/bin/${tool}" "/usr/local/bin/${tool}"; \
     done; \
     groupadd --gid "${SANDBOX_GID}" sandbox; \
