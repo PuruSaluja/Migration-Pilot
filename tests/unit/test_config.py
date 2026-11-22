@@ -84,6 +84,7 @@ SPEC_DEFAULTS: dict[str, Any] = {
 
 #: Structured settings validated by the NFR-12 tests (test_config_nfr12.py).
 NON_NUMERIC_FIELDS = {
+    "sandbox.egress_allowlist",  # a host list, tested in test_config_egress.py
     "routing.pins",
     "routing.effort_policy_normalized_from",
 }

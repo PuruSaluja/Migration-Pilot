@@ -35,6 +35,21 @@ memory_gb = 8               # lower it (e.g. 5) if WSL sees less than 8 GB (deci
 disk_gb = 20
 pids = 1024
 max_command_timeout_s = 900
+# Hosts install containers may reach through the egress proxy (port 443 only, exact names)
+egress_allowlist = [
+  "registry.npmjs.org",
+  "registry.yarnpkg.com",
+  "pypi.org",
+  "files.pythonhosted.org",
+  "repo.maven.apache.org",
+  "repo1.maven.org",
+  "plugins.gradle.org",
+  "plugins-artifacts.gradle.org",
+  "github.com",
+  "codeload.github.com",
+  "objects.githubusercontent.com",
+  "release-assets.githubusercontent.com",
+]
 
 [intake]                    # FR-2
 clone_depth = 50

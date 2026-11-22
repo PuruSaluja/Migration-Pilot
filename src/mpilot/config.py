@@ -33,7 +33,7 @@ from datetime import date
 from pathlib import Path
 from typing import Annotated, Any, Literal, Union, get_args, get_origin
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 from mpilot.core.errors import ConfigError
 from mpilot.core.types import EffortPolicy, Role, RoutingPolicy
@@ -45,6 +45,7 @@ from mpilot.model_policy import (
     sdk_model_pins,
 )
 from mpilot.models.domain import Budgets
+from mpilot.sandbox.proxy.server import check_allowlist
 
 ENV_PREFIX = "MPILOT_"
 ENV_CONFIG_PATH = "MPILOT_CONFIG"
@@ -89,6 +90,27 @@ class BenchSettings(_Section):
     batch_size: PositiveInt = 3
 
 
+#: §9.3: npm, PyPI, files.pythonhosted.org, Maven Central, Gradle plugins and GitHub release
+#: tarballs, spelled out as the hosts those clients actually connect to. `registry.yarnpkg.com`
+#: is npm's registry under the name yarn classic writes into `yarn.lock`; GitHub release and
+#: source tarballs redirect from `github.com` to the other three GitHub hosts. The codemod
+#: registry is reached at image build time only, never through the proxy.
+DEFAULT_EGRESS_ALLOWLIST: tuple[str, ...] = (
+    "registry.npmjs.org",
+    "registry.yarnpkg.com",
+    "pypi.org",
+    "files.pythonhosted.org",
+    "repo.maven.apache.org",
+    "repo1.maven.org",
+    "plugins.gradle.org",
+    "plugins-artifacts.gradle.org",
+    "github.com",
+    "codeload.github.com",
+    "objects.githubusercontent.com",
+    "release-assets.githubusercontent.com",
+)
+
+
 class SandboxSettings(_Section):
     """§9.3 limits. `memory_gb` may be lowered locally on small hosts (decisions D7)."""
 
@@ -97,6 +119,21 @@ class SandboxSettings(_Section):
     disk_gb: PositiveInt = 20
     pids: PositiveInt = 1024
     max_command_timeout_s: PositiveInt = 900  # `run_command` timeout_s upper bound (§9.1)
+    #: The only hosts an install container can reach, through the egress proxy on port 443
+    #: (§9.3 Network). Exact names, no wildcards; a subset of `DEFAULT_EGRESS_ALLOWLIST`.
+    egress_allowlist: list[str] = Field(default_factory=lambda: list(DEFAULT_EGRESS_ALLOWLIST))
+
+    @field_validator("egress_allowlist")
+    @classmethod
+    def _egress_allowlist(cls, value: list[str]) -> list[str]:
+        check_allowlist(value)  # normalized names, no IP literals, no duplicates, not empty
+        extra = [h for h in value if h not in DEFAULT_EGRESS_ALLOWLIST]
+        if extra:
+            raise ValueError(
+                f"egress_allowlist may only narrow the §9.3 list, not widen it: {extra} "
+                "(changing the list is a SPEC §9.3 decision)"
+            )
+        return value
 
 
 class IntakeSettings(_Section):
