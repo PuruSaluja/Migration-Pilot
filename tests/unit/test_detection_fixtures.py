@@ -124,14 +124,24 @@ def test_a_detection_that_succeeds_names_a_source_for_every_field(outcome: Outco
 
 
 #: The fixtures whose test command is not detected correctly, as measured on 2026-11-22.
-#: `py-tox-only`: the project runs pytest only through tox, which the images do not carry, and
-#: with test files present and pytest not configured the SPEC §9.4 fallback is
-#: `python -m unittest discover` (it would find no tests in plain pytest functions). Fixing it
-#: (read tox.ini deps, or require evidence of unittest) is an owner decision recorded in
-#: PROGRESS.md; when it is fixed this set becomes empty and this test is updated with it.
+#: `py-tox-only`: the project runs pytest only through tox, which the images do not carry. Since
+#: P2-13b the detector no longer guesses `unittest discover` for it (which would have found no
+#: tests, a silent zero-test run): it reports no test command (exit 2, with a message), and the
+#: owner can set `[detect].test_cmd`. Reading tox.ini deps (option (a) in PROGRESS.md) would
+#: fix it; when that is done this set becomes empty and this test is updated with it.
 KNOWN_MISSES: Final = frozenset({"py-tox-only"})
 
 
 def test_the_misses_are_exactly_the_known_ones() -> None:
     missed = {o.fixture.name for o in OUTCOMES if not o.test_cmd_correct}
     assert missed == KNOWN_MISSES, "\n" + summary()
+
+
+def test_a_miss_is_a_refusal_never_a_wrong_command() -> None:
+    """A wrong command is worse than none (the baseline would run nothing and pass), so every
+    miss must be an error that says so, not a different command."""
+    for o in OUTCOMES:
+        if not o.test_cmd_correct:
+            assert o.detection is None, o.fixture.name
+            assert o.error is not None
+            assert "no test command" in o.error, o.error

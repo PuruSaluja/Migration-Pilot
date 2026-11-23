@@ -16,6 +16,7 @@ import pytest
 from mpilot.core.errors import InputError
 from mpilot.detect.python import (
     DEFAULT_PYTHON_VERSION,
+    MAX_TEST_FILES_READ,
     PYTHON_IMAGE_VERSIONS,
     PythonDetection,
     PythonDetectionError,
@@ -28,6 +29,13 @@ from mpilot.testing.doubles import DictTree
 COMMIT = "a" * 40
 PY = ".venv/bin/python"
 MIN = '[project]\nname = "x"\nversion = "0"\n'
+
+
+# A test file that really is unittest: the fallback runner needs this kind of evidence (SPEC §9.4,
+# narrowed in P2-13b after a tox-only repo of plain pytest functions was given `unittest discover`
+# and would have run zero tests).
+UNITTEST = "import unittest\n\n\nclass T(unittest.TestCase):\n    def test_x(self):\n        pass\n"
+PLAIN = "def test_x():\n    assert True\n"
 
 
 def detect(files: Mapping[str, str]) -> PythonDetection:
@@ -435,7 +443,7 @@ def test_pytest_is_used_when_it_is_a_dependency_that_gets_installed(
 
 def test_a_pytest_dependency_in_an_extra_that_is_not_installed_does_not_count() -> None:
     body = proj('[project.optional-dependencies]\nlint = ["pytest"]\n')
-    d = detect({"pyproject.toml": body, "tests/test_a.py": "import unittest\n"})
+    d = detect({"pyproject.toml": body, "tests/test_a.py": UNITTEST})
     assert d.test_runner is not None
     assert d.test_runner.value == "unittest"
 
@@ -455,13 +463,13 @@ def test_a_requirement_name_must_match_exactly() -> None:
         "# pytest\n",
         "-e git+https://x/pytest#egg=y\n",
     ):
-        d = detect({"requirements.txt": text, "tests/test_a.py": "x"})
+        d = detect({"requirements.txt": text, "tests/test_a.py": UNITTEST})
         assert d.test_runner is not None
         assert d.test_runner.value == "unittest", text
 
 
 def test_underscores_dots_and_case_normalize_in_requirement_names() -> None:
-    d = detect({"requirements.txt": "Py_Test\n", "tests/test_a.py": "x"})
+    d = detect({"requirements.txt": "Py_Test\n", "tests/test_a.py": UNITTEST})
     assert d.test_runner is not None
     assert d.test_runner.value == "unittest"  # `py-test` is not `pytest`
     d = detect({"requirements.txt": "PYTEST\n"})
@@ -470,24 +478,112 @@ def test_underscores_dots_and_case_normalize_in_requirement_names() -> None:
 
 
 @pytest.mark.parametrize(
-    "files",
+    "path",
     [
-        {"tests/test_a.py": "x"},
-        {"test/test_a.py": "x"},
-        {"test_a.py": "x"},
-        {"pkg/test_a.py": "x"},
-        {"pkg/a_test.py": "x"},
-        {"tests/helpers.py": "x"},
-        {"testing/anything.py": "x"},
+        "tests/test_a.py",
+        "test/test_a.py",
+        "test_a.py",
+        "pkg/test_a.py",
+        "pkg/a_test.py",
+        "tests/helpers.py",
+        "testing/anything.py",
     ],
 )
-def test_unittest_when_pytest_is_not_configured_and_tests_exist(files: dict[str, str]) -> None:
-    d = detect({"requirements.txt": "six\n", **files})
+def test_unittest_when_pytest_is_not_configured_and_a_test_file_uses_unittest(path: str) -> None:
+    d = detect({"requirements.txt": "six\n", path: UNITTEST})
     assert d.test_runner is not None
     assert d.test_runner.value == "unittest"
-    assert d.test_runner.source == "test files present, pytest not configured"
+    assert d.test_runner.source == f"unittest.TestCase in {path}"
     assert d.test_cmd is not None
     assert d.test_cmd.value == f"{PY} -m unittest discover"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "import unittest\n\nclass A(unittest.TestCase):\n    pass\n",
+        "from unittest import TestCase\n\nclass A(TestCase):\n    pass\n",
+        "from unittest import TestCase, mock\n\nclass A(mock.Mock, TestCase):\n    pass\n",
+        "import unittest\nclass A(unittest.IsolatedAsyncioTestCase):\n    pass\n",
+        "  import unittest\n\nclass A( unittest.TestCase ) :\n    pass\n",
+    ],
+)
+def test_the_evidence_forms(text: str) -> None:
+    d = detect({"requirements.txt": "six\n", "tests/test_a.py": text})
+    assert d.test_runner is not None
+    assert d.test_runner.value == "unittest"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        PLAIN,
+        "x",
+        "",
+        # pytest-style tests often use unittest.mock; that is not a unittest test suite
+        "from unittest.mock import patch\n\n\ndef test_x():\n    assert patch\n",
+        "from unittest import mock\n\n\ndef test_x():\n    assert mock\n",
+        "import unittest.mock\n\n\ndef test_x():\n    assert unittest.mock\n",
+        # Django's own TestCase is run by `manage.py test`, not by `unittest discover`
+        "from django.test import TestCase\n\n\nclass A(TestCase):\n    pass\n",
+        # a comment or a string is not a class
+        "# import unittest\n# class A(unittest.TestCase): pass\n",
+        "import unittest\nNOTE = 'class A(unittest.TestCase)'\n\n\ndef test_x():\n    pass\n",
+        "import unittest\n\n\ndef test_x():\n    pass\n",
+        # `import unittest.mock` is not `import unittest`, even next to someone's TestCase
+        "import unittest.mock\nfrom django.test import TestCase\n\n\nclass A(TestCase):\n    pass\n",
+    ],
+)
+def test_no_unittest_evidence_means_no_test_command_not_a_guess(text: str) -> None:
+    d = detect({"requirements.txt": "six\n", "tests/test_a.py": text})
+    assert d.test_cmd is None
+    assert d.test_runner is None
+    assert any("test files" in w and "nothing shows how" in w for w in d.warnings)
+
+
+def test_evidence_in_a_file_that_is_not_a_test_file_does_not_count() -> None:
+    d = detect({"requirements.txt": "six\n", "tests/test_a.py": PLAIN, "src/app.py": UNITTEST})
+    assert d.test_cmd is None
+
+
+def test_any_one_test_file_is_enough() -> None:
+    files = {"requirements.txt": "six\n", "tests/test_a.py": PLAIN, "tests/test_b.py": UNITTEST}
+    d = detect(files)
+    assert d.test_runner is not None
+    assert d.test_runner.source == "unittest.TestCase in tests/test_b.py"
+
+
+def test_the_first_evidence_in_path_order_is_the_source() -> None:
+    files = {"requirements.txt": "six\n", "tests/test_z.py": UNITTEST, "tests/test_a.py": UNITTEST}
+    d = detect(files)
+    assert d.test_runner is not None
+    assert d.test_runner.source == "unittest.TestCase in tests/test_a.py"
+
+
+def test_only_so_many_test_files_are_read_for_evidence() -> None:
+    files = {"requirements.txt": "six\n"}
+    files |= {f"tests/test_{i:04}.py": PLAIN for i in range(MAX_TEST_FILES_READ)}
+    files["tests/test_zzzz.py"] = UNITTEST  # sorts after the cap
+    assert detect(files).test_cmd is None
+    files["tests/test_0000.py"] = UNITTEST  # inside the cap
+    assert detect(files).test_cmd is not None
+
+
+def test_an_unreadable_test_file_is_skipped() -> None:
+    class Unreadable(DictTree):
+        def read_text(self, rel_path: str) -> str | None:
+            return None if rel_path == "tests/test_a.py" else super().read_text(rel_path)
+
+    tree = Unreadable(
+        COMMIT, {"requirements.txt": "six\n", "tests/test_a.py": UNITTEST, "tests/test_b.py": PLAIN}
+    )
+    assert detect_python(tree).test_cmd is None
+
+
+def test_pytest_still_wins_over_unittest_evidence() -> None:
+    d = detect({"requirements.txt": "pytest\n", "tests/test_a.py": UNITTEST})
+    assert d.test_runner is not None
+    assert d.test_runner.value == "pytest"  # pytest runs TestCase classes too
 
 
 def test_no_tests_no_test_command() -> None:
@@ -502,6 +598,16 @@ def test_a_project_that_only_has_tox_or_nox_is_not_supported_yet_and_says_so() -
         d = detect({"requirements.txt": "six\n", name: "x"})
         assert d.test_cmd is None
         assert any("tox or nox" in w for w in d.warnings)
+
+
+@pytest.mark.parametrize("name", ["tox.ini", "noxfile.py"])
+def test_tox_or_nox_with_plain_test_files_gets_no_command_and_says_why(name: str) -> None:
+    """The P2-13 fixture `py-tox-only`: pytest-style tests that only tox knows how to run. The
+    old fallback ran `unittest discover` here, which finds no tests (a silent zero-test run)."""
+    d = detect({"requirements.txt": "six\n", name: "x", "tests/test_a.py": PLAIN})
+    assert d.test_cmd is None
+    assert any("tox or nox" in w for w in d.warnings)
+    assert any("nothing shows how" in w for w in d.warnings)
 
 
 def test_tox_ini_with_a_pytest_section_is_pytest_not_tox() -> None:
@@ -521,7 +627,9 @@ def test_pytest_gets_a_junitxml_flag_and_unittest_gets_none() -> None:
     assert inv is not None
     assert inv.cmd == f"{PY} -m pytest -q --junitxml=reports/junit.xml"
     assert inv.output_path == "reports/junit.xml"
-    u = detect({"requirements.txt": "six\n", "tests/test_a.py": "x"})
+    u = detect({"requirements.txt": "six\n", "tests/test_a.py": UNITTEST})
+    assert u.test_runner is not None
+    assert u.test_runner.value == "unittest"
     assert junit_invocation(u, "junit.xml") is None
     assert junit_invocation(detect({"requirements.txt": "six\n"}), "junit.xml") is None
 

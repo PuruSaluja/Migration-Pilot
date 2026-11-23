@@ -583,7 +583,7 @@ write_note:       {key, text} -> {ok}                     # migration-notes memo
 **Python**
 - **Tool:** detected from `uv.lock` / `poetry.lock` / `pdm.lock` / `requirements*.txt` / `pyproject.toml`.
 - **Environment:** a venv with test extras (`.[test]`, `[dev]`, `requirements-dev.txt`, Poetry groups).
-- **Tests:** `pytest -q --junitxml=…` when configured, else `python -m unittest discover`. tox/nox only as a last resort.
+- **Tests:** `pytest -q --junitxml=…` when configured, else `python -m unittest discover` when a test file subclasses `unittest.TestCase` (otherwise no test command is detected: a guessed runner that finds no tests would pass a baseline that ran nothing). tox/nox only as a last resort.
 - **Typecheck:** mypy or pyright, if configured.
 
 **Java (Phase 10)**

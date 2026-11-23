@@ -3,7 +3,8 @@
 `detect_python(tree)` reads a host mirror tree through `TreeReader` (never a workspace path) and
 returns a `PythonDetection`: the tool (uv, Poetry, PDM or pip), the install commands (frozen
 for baseline, unfrozen after the bump) with the test extras and groups, the test command
-(pytest when configured, else unittest), mypy when configured, and the runtime version (an
+(pytest when configured, else unittest when a test file subclasses `unittest.TestCase`),
+mypy when configured, and the runtime version (an
 image minor), each with where it came from. This is the *heuristics* layer; P2-12 layers CI
 config, `mpilot.toml` and user overrides on top and builds the `EnvProfile`.
 
@@ -71,6 +72,11 @@ _SPEC_TOKEN: Final = re.compile(
     r"(\^|~=|~|===|==|!=|<=|>=|<|>)?(\d{1,3}(?:\.\d{1,3}){0,2}(?:\.\*)?)"
 )
 MAX_REQUIREMENT_LINES: Final = 5000
+MAX_TEST_FILES_READ: Final = 200  # looked at for unittest evidence, in path order
+_UNITTEST_IMPORT: Final = re.compile(
+    r"^[ \t]*(?:import[ \t]+unittest(?![.\w])|from[ \t]+unittest[ \t]+import\b)", re.MULTILINE
+)
+_TESTCASE_CLASS: Final = re.compile(r"^[ \t]*class[ \t]+\w+[ \t]*\([^)\n]*TestCase\b", re.MULTILINE)
 
 
 class PythonDetectionError(InputError):
@@ -403,12 +409,24 @@ def _pytest_config_source(tree: TreeReader, pyproject: Mapping[str, Any]) -> str
     return None
 
 
-def _has_test_files(tree: TreeReader) -> bool:
-    return any(
-        _TEST_FILE.search(p)
-        or (p.endswith(".py") and p.startswith(("tests/", "test/", "testing/")))
+def _test_file_paths(tree: TreeReader) -> list[str]:
+    return sorted(
+        p
         for p in tree.paths()
+        if _TEST_FILE.search(p)
+        or (p.endswith(".py") and p.startswith(("tests/", "test/", "testing/")))
     )
+
+
+def _unittest_evidence(tree: TreeReader, test_files: list[str]) -> str | None:
+    """The first test file (in path order, at most `MAX_TEST_FILES_READ` of them) that imports
+    unittest *and* defines a `...TestCase` subclass. Pytest-style tests that merely use
+    `unittest.mock`, and Django's own `TestCase`, are not evidence."""
+    for path in test_files[:MAX_TEST_FILES_READ]:
+        text = tree.read_text(path)
+        if text and _UNITTEST_IMPORT.search(text) and _TESTCASE_CLASS.search(text):
+            return path
+    return None
 
 
 def _test_command(
@@ -427,15 +445,23 @@ def _test_command(
             Detected("pytest", source),
             Detected(f"{VENV_PYTHON} -m pytest -q", source),
         )
-    if _has_test_files(tree):
-        source = "test files present, pytest not configured"
+    test_files = _test_file_paths(tree)
+    evidence = _unittest_evidence(tree, test_files)
+    if evidence is not None:
+        source = f"unittest.TestCase in {evidence}"
         return Detected("unittest", source), Detected(f"{VENV_PYTHON} -m unittest discover", source)
     paths = tree.paths()
     if "tox.ini" in paths or "noxfile.py" in paths:
         warnings.append(
             "only tox or nox defines the tests: not supported yet (the images lack them)"
         )
-    warnings.append("no test command: no pytest configuration, no test files")
+    if test_files:
+        warnings.append(
+            "no test command: test files exist but nothing shows how to run them (no pytest "
+            "configuration or dependency, and no test file subclasses unittest.TestCase)"
+        )
+    else:
+        warnings.append("no test command: no pytest configuration, no test files")
     return None, None
 
 
