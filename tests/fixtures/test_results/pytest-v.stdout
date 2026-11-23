@@ -1,0 +1,107 @@
+============================= test session starts ==============================
+platform linux -- Python 3.12.16, pytest-8.4.2, pluggy-1.7.0 -- /workspace/.venv/bin/python
+cachedir: .pytest_cache
+rootdir: /workspace
+configfile: pytest.ini
+collecting ... collected 21 items
+
+tests/pkg/test_mod.py::test_in_package FAILED                            [  4%]
+tests/test_sample.py::test_pass PASSED                                   [  9%]
+tests/test_sample.py::test_fail FAILED                                   [ 14%]
+tests/test_sample.py::test_setup_error ERROR                             [ 19%]
+tests/test_sample.py::test_teardown_error PASSED                         [ 23%]
+tests/test_sample.py::test_teardown_error ERROR                          [ 23%]
+tests/test_sample.py::test_skipped SKIPPED (not today)                   [ 28%]
+tests/test_sample.py::test_xfail XFAIL (known bug)                       [ 33%]
+tests/test_sample.py::test_xpass XPASS (fixed?)                          [ 38%]
+tests/test_sample.py::test_xpass_strict FAILED                           [ 42%]
+tests/test_sample.py::test_param[1] PASSED                               [ 47%]
+tests/test_sample.py::test_param[a/b] PASSED                             [ 52%]
+tests/test_sample.py::test_param[x::y] FAILED                            [ 57%]
+tests/test_sample.py::test_param[with space] PASSED                      [ 61%]
+tests/test_sample.py::test_param[\xfcn\xef] PASSED                       [ 66%]
+tests/test_sample.py::test_param[br[ack]et] PASSED                       [ 71%]
+tests/test_sample.py::TestKlass::test_method PASSED                      [ 76%]
+tests/test_sample.py::TestKlass::test_method_param[1] PASSED             [ 80%]
+tests/test_sample.py::TestKlass::test_method_param[2] FAILED             [ 85%]
+tests/test_sample.py::TestKlass::TestInner::test_deep PASSED             [ 90%]
+tests/test_sample.py::LegacyCase::test_legacy PASSED                     [ 95%]
+tests/test_sample.py::LegacyCase::test_legacy_skip SKIPPED (legacy skip) [100%]
+
+==================================== ERRORS ====================================
+______________________ ERROR at setup of test_setup_error ______________________
+
+    @pytest.fixture
+    def broken():
+>       raise RuntimeError("fixture boom")
+E       RuntimeError: fixture boom
+
+tests/test_sample.py:16: RuntimeError
+___________________ ERROR at teardown of test_teardown_error ___________________
+
+    @pytest.fixture
+    def bad_teardown():
+        yield
+>       raise RuntimeError("teardown boom")
+E       RuntimeError: teardown boom
+
+tests/test_sample.py:26: RuntimeError
+=================================== FAILURES ===================================
+_______________________________ test_in_package ________________________________
+
+    def test_in_package():
+>       assert "<&>" == "<&>\""
+E       assert '<&>' == '<&>"'
+E         
+E         - <&>"
+E         ?    -
+E         + <&>
+
+tests/pkg/test_mod.py:2: AssertionError
+__________________________________ test_fail ___________________________________
+
+    def test_fail():
+>       assert 1 == 2, "one is not two"
+E       AssertionError: one is not two
+E       assert 1 == 2
+
+tests/test_sample.py:11: AssertionError
+______________________________ test_xpass_strict _______________________________
+[XPASS(strict)] strict
+_______________________________ test_param[x::y] _______________________________
+
+value = 'x::y'
+
+    @pytest.mark.parametrize(
+        "value",
+        [1, "a/b", "x::y", "with space", "ünï", "br[ack]et"],
+    )
+    def test_param(value):
+>       assert value != "x::y"
+E       AssertionError: assert 'x::y' != 'x::y'
+
+tests/test_sample.py:58: AssertionError
+________________________ TestKlass.test_method_param[2] ________________________
+
+self = <tests.test_sample.TestKlass object at 0x74e92f6e8440>, n = 2
+
+    @pytest.mark.parametrize("n", [1, 2])
+    def test_method_param(self, n):
+>       assert n == 1
+E       assert 2 == 1
+
+tests/test_sample.py:67: AssertionError
+=========================== short test summary info ============================
+FAILED tests/pkg/test_mod.py::test_in_package - assert '<&>' == '<&>"'
+  
+  - <&>"
+  ?    -
+  + <&>
+FAILED tests/test_sample.py::test_fail - AssertionError: one is not two
+assert 1 == 2
+FAILED tests/test_sample.py::test_xpass_strict
+FAILED tests/test_sample.py::test_param[x::y] - AssertionError: assert 'x::y' != 'x::y'
+FAILED tests/test_sample.py::TestKlass::test_method_param[2] - assert 2 == 1
+ERROR tests/test_sample.py::test_setup_error - RuntimeError: fixture boom
+ERROR tests/test_sample.py::test_teardown_error - RuntimeError: teardown boom
+=== 5 failed, 11 passed, 2 skipped, 1 xfailed, 1 xpassed, 2 errors in 0.04s ====

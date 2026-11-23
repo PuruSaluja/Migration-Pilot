@@ -1,0 +1,106 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="jest tests" tests="10" failures="3" errors="1" time="0.62">
+  <testsuite name="green" errors="0" failures="0" skipped="0" timestamp="2026-11-23T03:47:35" time="0.407" tests="2">
+    <testcase classname="tests/green.test.js" name="green › one" time="0.004" file="tests/green.test.js">
+    </testcase>
+    <testcase classname="tests/green.test.js" name="green › two" time="0.001" file="tests/green.test.js">
+    </testcase>
+  </testsuite>
+  <testsuite name="tests/broken.test.js" errors="1" failures="0" skipped="0" timestamp="1970-01-01T00:00:00" time="0" tests="0">
+    <testcase classname="Test suite failed to run" name="tests/broken.test.js" time="0" file="tests/broken.test.js">
+      <error>  ● Test suite failed to run
+
+    Cannot find module &apos;./does-not-exist&apos; from &apos;tests/broken.test.js&apos;
+
+    &gt; 1 | const x = require(&apos;./does-not-exist&apos;);
+        |                                      ^
+      2 | test(&apos;never runs&apos;, () =&gt; {});
+      3 |
+
+      at Resolver._throwModNotFoundError (node_modules/jest-resolve/build/resolver.js:427:11)
+      at Object.&lt;anonymous&gt; (tests/broken.test.js:1:38)
+</error>
+    </testcase>
+    <testcase classname="Test suite failed to run" name="tests/broken.test.js" time="0" file="tests/broken.test.js">
+      <failure>&quot;Cannot find module &apos;./does-not-exist&apos; from &apos;tests/broken.test.js&apos;&quot;</failure>
+    </testcase>
+  </testsuite>
+  <testsuite name="undefined" errors="0" failures="1" skipped="0" timestamp="2026-11-23T03:47:35" time="0.433" tests="2">
+    <testcase classname="tests/sub/unicode.test.js" name=" › ünïcödé ✓" time="0.005" file="tests/sub/unicode.test.js">
+    </testcase>
+    <testcase classname="tests/sub/unicode.test.js" name=" › throws error" time="0.001" file="tests/sub/unicode.test.js">
+      <failure>TypeError: boom
+    at Object.&lt;anonymous&gt; (/workspace/tests/sub/unicode.test.js:3:36)
+    at Promise.then.completed (/workspace/node_modules/jest-circus/build/utils.js:298:28)
+    at new Promise (&lt;anonymous&gt;)
+    at callAsyncCircusFn (/workspace/node_modules/jest-circus/build/utils.js:231:10)
+    at _callCircusTest (/workspace/node_modules/jest-circus/build/run.js:316:40)
+    at processTicksAndRejections (node:internal/process/task_queues:103:5)
+    at _runTest (/workspace/node_modules/jest-circus/build/run.js:252:3)
+    at _runTestsForDescribeBlock (/workspace/node_modules/jest-circus/build/run.js:126:9)
+    at run (/workspace/node_modules/jest-circus/build/run.js:71:3)
+    at runAndTransformResultsToJestFormat (/workspace/node_modules/jest-circus/build/legacy-code-todo-rewrite/jestAdapterInit.js:122:21)
+    at jestAdapter (/workspace/node_modules/jest-circus/build/legacy-code-todo-rewrite/jestAdapter.js:79:19)
+    at runTestInternal (/workspace/node_modules/jest-runner/build/runTest.js:367:16)
+    at runTest (/workspace/node_modules/jest-runner/build/runTest.js:444:34)
+    at Object.worker (/workspace/node_modules/jest-runner/build/testWorker.js:106:12)</failure>
+    </testcase>
+  </testsuite>
+  <testsuite name="math" errors="0" failures="2" skipped="1" timestamp="2026-11-23T03:47:35" time="0.458" tests="6">
+    <testcase classname="tests/math.test.js" name="math › adds" time="0.005" file="tests/math.test.js">
+    </testcase>
+    <testcase classname="tests/math.test.js" name="math › nested › subtracts &amp; &lt;compares&gt; &quot;quotes&quot;" time="0.003" file="tests/math.test.js">
+      <failure>Error: expect(received).toBe(expected) // Object.is equality
+
+Expected: 3
+Received: 1
+    at Object.toBe (/workspace/tests/math.test.js:5:67)
+    at Promise.then.completed (/workspace/node_modules/jest-circus/build/utils.js:298:28)
+    at new Promise (&lt;anonymous&gt;)
+    at callAsyncCircusFn (/workspace/node_modules/jest-circus/build/utils.js:231:10)
+    at _callCircusTest (/workspace/node_modules/jest-circus/build/run.js:316:40)
+    at processTicksAndRejections (node:internal/process/task_queues:103:5)
+    at _runTest (/workspace/node_modules/jest-circus/build/run.js:252:3)
+    at _runTestsForDescribeBlock (/workspace/node_modules/jest-circus/build/run.js:126:9)
+    at _runTestsForDescribeBlock (/workspace/node_modules/jest-circus/build/run.js:121:9)
+    at _runTestsForDescribeBlock (/workspace/node_modules/jest-circus/build/run.js:121:9)
+    at run (/workspace/node_modules/jest-circus/build/run.js:71:3)
+    at runAndTransformResultsToJestFormat (/workspace/node_modules/jest-circus/build/legacy-code-todo-rewrite/jestAdapterInit.js:122:21)
+    at jestAdapter (/workspace/node_modules/jest-circus/build/legacy-code-todo-rewrite/jestAdapter.js:79:19)
+    at runTestInternal (/workspace/node_modules/jest-runner/build/runTest.js:367:16)
+    at runTest (/workspace/node_modules/jest-runner/build/runTest.js:444:34)
+    at Object.worker (/workspace/node_modules/jest-runner/build/testWorker.js:106:12)</failure>
+    </testcase>
+    <testcase classname="tests/math.test.js" name="math › skipped one" time="0" file="tests/math.test.js">
+      <skipped/>
+    </testcase>
+    <testcase classname="tests/math.test.js" name="math › todo one" time="0" file="tests/math.test.js">
+    </testcase>
+    <testcase classname="tests/math.test.js" name="math › inc 1 -&gt; 2" time="0" file="tests/math.test.js">
+    </testcase>
+    <testcase classname="tests/math.test.js" name="math › inc 2 -&gt; 4" time="0.001" file="tests/math.test.js">
+      <failure>Error: expect(received).toBe(expected) // Object.is equality
+
+Expected: 4
+Received: 3
+    at toBe (/workspace/tests/math.test.js:9:73)
+    at Object.&lt;anonymous&gt; (/workspace/node_modules/jest-each/build/bind.js:81:13)
+    at Promise.then.completed (/workspace/node_modules/jest-circus/build/utils.js:298:28)
+    at new Promise (&lt;anonymous&gt;)
+    at callAsyncCircusFn (/workspace/node_modules/jest-circus/build/utils.js:231:10)
+    at _callCircusTest (/workspace/node_modules/jest-circus/build/run.js:316:40)
+    at processTicksAndRejections (node:internal/process/task_queues:103:5)
+    at _runTest (/workspace/node_modules/jest-circus/build/run.js:252:3)
+    at _runTestsForDescribeBlock (/workspace/node_modules/jest-circus/build/run.js:126:9)
+    at _runTestsForDescribeBlock (/workspace/node_modules/jest-circus/build/run.js:121:9)
+    at run (/workspace/node_modules/jest-circus/build/run.js:71:3)
+    at runAndTransformResultsToJestFormat (/workspace/node_modules/jest-circus/build/legacy-code-todo-rewrite/jestAdapterInit.js:122:21)
+    at jestAdapter (/workspace/node_modules/jest-circus/build/legacy-code-todo-rewrite/jestAdapter.js:79:19)
+    at runTestInternal (/workspace/node_modules/jest-runner/build/runTest.js:367:16)
+    at runTest (/workspace/node_modules/jest-runner/build/runTest.js:444:34)
+    at Object.worker (/workspace/node_modules/jest-runner/build/testWorker.js:106:12)</failure>
+    </testcase>
+    <testcase classname="tests/math.test.js" name=" › top level" time="0" file="tests/math.test.js">
+    </testcase>
+  </testsuite>
+</testsuites>

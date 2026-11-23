@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="Mocha Tests" time="0.005" tests="9" failures="3" skipped="2">
+  <testsuite name="Root Suite" timestamp="2026-11-23T03:47:45" tests="2" time="0.000" failures="0">
+    <testcase name="top level" time="0.000" classname="top level">
+    </testcase>
+    <testcase name="ünïcödé ✓" time="0.000" classname="ünïcödé ✓">
+    </testcase>
+  </testsuite>
+  <testsuite name="math" timestamp="2026-11-23T03:47:45" tests="5" file="/workspace/test/math.spec.js" time="0.000" failures="1">
+    <testcase name="math adds" time="0.000" classname="adds">
+    </testcase>
+    <testcase name="math inc 1 -&gt; 2" time="0.000" classname="inc 1 -&gt; 2">
+    </testcase>
+    <testcase name="math inc 2 -&gt; 4" time="0.001" classname="inc 2 -&gt; 4">
+      <failure message="Expected values to be strictly equal:
+
+3 !== 4
+" type="AssertionError"><![CDATA[AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+
+3 !== 4
+
+    at Context.<anonymous> (test/math.spec.js:9:76)
+    at process.processImmediate (node:internal/timers:484:21)
+
+      + expected - actual
+
+      -3
+      +4
+      ]]></failure>
+    </testcase>
+  </testsuite>
+  <testsuite name="nested" timestamp="2026-11-23T03:47:45" tests="1" file="/workspace/test/math.spec.js" time="0.001" failures="1">
+    <testcase name="math nested subtracts &amp; &lt;compares&gt; &quot;quotes&quot;" time="0.000" classname="subtracts &amp; &lt;compares&gt; &quot;quotes&quot;">
+      <failure message="Expected values to be strictly equal:
+
+1 !== 3
+" type="AssertionError"><![CDATA[AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+
+1 !== 3
+
+    at Context.<anonymous> (test/math.spec.js:5:58)
+    at process.processImmediate (node:internal/timers:484:21)
+
+      + expected - actual
+
+      -1
+      +3
+      ]]></failure>
+    </testcase>
+  </testsuite>
+  <testsuite name="hooks" timestamp="2026-11-23T03:47:45" tests="1" file="/workspace/test/math.spec.js" time="0.000" failures="1">
+    <testcase name="math hooks &quot;before all&quot; hook for &quot;after failing hook&quot;" time="0.000" classname="&quot;before all&quot; hook for &quot;after failing hook&quot;">
+      <failure message="hook boom" type="Error"><![CDATA[Error: hook boom
+    at Context.<anonymous> (test/math.spec.js:11:26)
+    at process.processImmediate (node:internal/timers:484:21)]]></failure>
+    </testcase>
+  </testsuite>
+</testsuites>

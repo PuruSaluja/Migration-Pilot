@@ -1,0 +1,72 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<testsuites name="vitest tests" tests="12" failures="4" errors="0" time="0.019804501">
+    <testsuite name="tests/broken.test.js" timestamp="2026-11-23T03:47:42.349Z" hostname="e9a821de6f0c" tests="1" failures="1" errors="0" skipped="0" time="0">
+        <testcase classname="tests/broken.test.js" name="tests/broken.test.js" time="0">
+            <failure message="Cannot find module &apos;./does-not-exist.js&apos; imported from &apos;/workspace/tests/broken.test.js&apos;" type="Error">
+Error: Cannot find module &apos;./does-not-exist.js&apos; imported from &apos;/workspace/tests/broken.test.js&apos;
+ ❯ tests/broken.test.js:1:1
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯
+Serialized Error: { code: &apos;ERR_MODULE_NOT_FOUND&apos; }
+Caused by: Caused by: Error: Failed to load url ./does-not-exist.js (resolved id: ./does-not-exist.js) in /workspace/tests/broken.test.js. Does the file exist?
+ ❯ loadAndTransform node_modules/vite/dist/node/chunks/config.js:22907:33
+            </failure>
+        </testcase>
+    </testsuite>
+    <testsuite name="tests/green.test.js" timestamp="2026-11-23T03:47:42.354Z" hostname="e9a821de6f0c" tests="2" failures="0" errors="0" skipped="0" time="0.002180344">
+        <testcase classname="tests/green.test.js" name="green &gt; one" time="0.001079993">
+        </testcase>
+        <testcase classname="tests/green.test.js" name="green &gt; two" time="0.000248395">
+        </testcase>
+    </testsuite>
+    <testsuite name="tests/math.test.js" timestamp="2026-11-23T03:47:42.355Z" hostname="e9a821de6f0c" tests="7" failures="2" errors="0" skipped="2" time="0.011411555">
+        <testcase classname="tests/math.test.js" name="math &gt; adds" time="0.001755678">
+        </testcase>
+        <testcase classname="tests/math.test.js" name="math &gt; nested &gt; subtracts &amp; &lt;compares&gt; &quot;quotes&quot;" time="0.006517212">
+            <failure message="expected 1 to be 3 // Object.is equality" type="AssertionError">
+AssertionError: expected 1 to be 3 // Object.is equality
+
+- Expected
++ Received
+
+- 3
++ 1
+
+ ❯ tests/math.test.js:5:67
+            </failure>
+        </testcase>
+        <testcase classname="tests/math.test.js" name="math &gt; skipped one" time="0">
+            <skipped/>
+        </testcase>
+        <testcase classname="tests/math.test.js" name="math &gt; todo one" time="0">
+            <skipped/>
+        </testcase>
+        <testcase classname="tests/math.test.js" name="math &gt; inc 1 -&gt; 2" time="0.00034837">
+        </testcase>
+        <testcase classname="tests/math.test.js" name="math &gt; inc 2 -&gt; 4" time="0.000957457">
+            <failure message="expected 3 to be 4 // Object.is equality" type="AssertionError">
+AssertionError: expected 3 to be 4 // Object.is equality
+
+- Expected
++ Received
+
+- 4
++ 3
+
+ ❯ tests/math.test.js:9:73
+            </failure>
+        </testcase>
+        <testcase classname="tests/math.test.js" name="top level" time="0.000131598">
+        </testcase>
+    </testsuite>
+    <testsuite name="tests/sub/unicode.test.js" timestamp="2026-11-23T03:47:42.358Z" hostname="e9a821de6f0c" tests="2" failures="1" errors="0" skipped="0" time="0.006212602">
+        <testcase classname="tests/sub/unicode.test.js" name="ünïcödé ✓" time="0.001569008">
+        </testcase>
+        <testcase classname="tests/sub/unicode.test.js" name="throws error" time="0.003222943">
+            <failure message="boom" type="TypeError">
+TypeError: boom
+ ❯ tests/sub/unicode.test.js:3:36
+            </failure>
+        </testcase>
+    </testsuite>
+</testsuites>

@@ -1,0 +1,79 @@
+F.FE.EsxXF..F.....F..s                                                   [100%]
+==================================== ERRORS ====================================
+______________________ ERROR at setup of test_setup_error ______________________
+
+    @pytest.fixture
+    def broken():
+>       raise RuntimeError("fixture boom")
+E       RuntimeError: fixture boom
+
+tests/test_sample.py:16: RuntimeError
+___________________ ERROR at teardown of test_teardown_error ___________________
+
+    @pytest.fixture
+    def bad_teardown():
+        yield
+>       raise RuntimeError("teardown boom")
+E       RuntimeError: teardown boom
+
+tests/test_sample.py:26: RuntimeError
+=================================== FAILURES ===================================
+_______________________________ test_in_package ________________________________
+
+    def test_in_package():
+>       assert "<&>" == "<&>\""
+E       assert '<&>' == '<&>"'
+E         
+E         - <&>"
+E         ?    -
+E         + <&>
+
+tests/pkg/test_mod.py:2: AssertionError
+__________________________________ test_fail ___________________________________
+
+    def test_fail():
+>       assert 1 == 2, "one is not two"
+E       AssertionError: one is not two
+E       assert 1 == 2
+
+tests/test_sample.py:11: AssertionError
+______________________________ test_xpass_strict _______________________________
+[XPASS(strict)] strict
+_______________________________ test_param[x::y] _______________________________
+
+value = 'x::y'
+
+    @pytest.mark.parametrize(
+        "value",
+        [1, "a/b", "x::y", "with space", "ünï", "br[ack]et"],
+    )
+    def test_param(value):
+>       assert value != "x::y"
+E       AssertionError: assert 'x::y' != 'x::y'
+
+tests/test_sample.py:58: AssertionError
+________________________ TestKlass.test_method_param[2] ________________________
+
+self = <tests.test_sample.TestKlass object at 0x705dc67b3da0>, n = 2
+
+    @pytest.mark.parametrize("n", [1, 2])
+    def test_method_param(self, n):
+>       assert n == 1
+E       assert 2 == 1
+
+tests/test_sample.py:67: AssertionError
+--------------- generated xml file: /workspace/.mpilot/junit.xml ---------------
+=========================== short test summary info ============================
+FAILED tests/pkg/test_mod.py::test_in_package - assert '<&>' == '<&>"'
+  
+  - <&>"
+  ?    -
+  + <&>
+FAILED tests/test_sample.py::test_fail - AssertionError: one is not two
+assert 1 == 2
+FAILED tests/test_sample.py::test_xpass_strict
+FAILED tests/test_sample.py::test_param[x::y] - AssertionError: assert 'x::y' != 'x::y'
+FAILED tests/test_sample.py::TestKlass::test_method_param[2] - assert 2 == 1
+ERROR tests/test_sample.py::test_setup_error - RuntimeError: fixture boom
+ERROR tests/test_sample.py::test_teardown_error - RuntimeError: teardown boom
+5 failed, 11 passed, 2 skipped, 1 xfailed, 1 xpassed, 2 errors in 0.05s

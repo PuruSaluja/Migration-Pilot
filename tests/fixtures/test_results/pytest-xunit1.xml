@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="pytest" errors="2" failures="5" skipped="3" tests="22" time="0.046" timestamp="2026-11-23T03:47:47.656945+00:00" hostname="fe213a62c775"><testcase classname="tests.pkg.test_mod" name="test_in_package" file="tests/pkg/test_mod.py" line="0" time="0.001"><failure message="assert '&lt;&amp;&gt;' == '&lt;&amp;&gt;&quot;'&#10;  &#10;  - &lt;&amp;&gt;&quot;&#10;  ?    -&#10;  + &lt;&amp;&gt;">def test_in_package():
+&gt;       assert "&lt;&amp;&gt;" == "&lt;&amp;&gt;\""
+E       assert '&lt;&amp;&gt;' == '&lt;&amp;&gt;"'
+E         
+E         - &lt;&amp;&gt;"
+E         ?    -
+E         + &lt;&amp;&gt;
+
+tests/pkg/test_mod.py:2: AssertionError</failure></testcase><testcase classname="tests.test_sample" name="test_pass" file="tests/test_sample.py" line="5" time="0.000" /><testcase classname="tests.test_sample" name="test_fail" file="tests/test_sample.py" line="9" time="0.001"><failure message="AssertionError: one is not two&#10;assert 1 == 2">def test_fail():
+&gt;       assert 1 == 2, "one is not two"
+E       AssertionError: one is not two
+E       assert 1 == 2
+
+tests/test_sample.py:11: AssertionError</failure></testcase><testcase classname="tests.test_sample" name="test_setup_error" file="tests/test_sample.py" line="18" time="0.000"><error message="failed on setup with &quot;RuntimeError: fixture boom&quot;">@pytest.fixture
+    def broken():
+&gt;       raise RuntimeError("fixture boom")
+E       RuntimeError: fixture boom
+
+tests/test_sample.py:16: RuntimeError</error></testcase><testcase classname="tests.test_sample" name="test_teardown_error" file="tests/test_sample.py" line="28" time="0.000"><error message="failed on teardown with &quot;RuntimeError: teardown boom&quot;">@pytest.fixture
+    def bad_teardown():
+        yield
+&gt;       raise RuntimeError("teardown boom")
+E       RuntimeError: teardown boom
+
+tests/test_sample.py:26: RuntimeError</error></testcase><testcase classname="tests.test_sample" name="test_skipped" file="tests/test_sample.py" line="32" time="0.000"><skipped type="pytest.skip" message="not today">/workspace/tests/test_sample.py:33: not today</skipped></testcase><testcase classname="tests.test_sample" name="test_xfail" file="tests/test_sample.py" line="37" time="0.000"><skipped type="pytest.xfail" message="known bug" /></testcase><testcase classname="tests.test_sample" name="test_xpass" file="tests/test_sample.py" line="42" time="0.000" /><testcase classname="tests.test_sample" name="test_xpass_strict" file="tests/test_sample.py" line="47" time="0.000"><failure message="[XPASS(strict)] strict">[XPASS(strict)] strict</failure></testcase><testcase classname="tests.test_sample" name="test_param[1]" file="tests/test_sample.py" line="52" time="0.000" /><testcase classname="tests.test_sample" name="test_param[a/b]" file="tests/test_sample.py" line="52" time="0.000" /><testcase classname="tests.test_sample" name="test_param[x::y]" file="tests/test_sample.py" line="52" time="0.000"><failure message="AssertionError: assert 'x::y' != 'x::y'">value = 'x::y'
+
+    @pytest.mark.parametrize(
+        "value",
+        [1, "a/b", "x::y", "with space", "ünï", "br[ack]et"],
+    )
+    def test_param(value):
+&gt;       assert value != "x::y"
+E       AssertionError: assert 'x::y' != 'x::y'
+
+tests/test_sample.py:58: AssertionError</failure></testcase><testcase classname="tests.test_sample" name="test_param[with space]" file="tests/test_sample.py" line="52" time="0.000" /><testcase classname="tests.test_sample" name="test_param[\xfcn\xef]" file="tests/test_sample.py" line="52" time="0.000" /><testcase classname="tests.test_sample" name="test_param[br[ack]et]" file="tests/test_sample.py" line="52" time="0.000" /><testcase classname="tests.test_sample.TestKlass" name="test_method" file="tests/test_sample.py" line="61" time="0.000" /><testcase classname="tests.test_sample.TestKlass" name="test_method_param[1]" file="tests/test_sample.py" line="64" time="0.000" /><testcase classname="tests.test_sample.TestKlass" name="test_method_param[2]" file="tests/test_sample.py" line="64" time="0.000"><failure message="assert 2 == 1">self = &lt;tests.test_sample.TestKlass object at 0x7e27dc58f710&gt;, n = 2
+
+    @pytest.mark.parametrize("n", [1, 2])
+    def test_method_param(self, n):
+&gt;       assert n == 1
+E       assert 2 == 1
+
+tests/test_sample.py:67: AssertionError</failure></testcase><testcase classname="tests.test_sample.TestKlass.TestInner" name="test_deep" file="tests/test_sample.py" line="69" time="0.000" /><testcase classname="tests.test_sample.LegacyCase" name="test_legacy" file="tests/test_sample.py" line="74" time="0.000" /><testcase classname="tests.test_sample.LegacyCase" name="test_legacy_skip" file="tests/test_sample.py" line="77" time="0.000"><skipped type="pytest.skip" message="legacy skip">/workspace/tests/test_sample.py:78: legacy skip</skipped></testcase></testsuite></testsuites>

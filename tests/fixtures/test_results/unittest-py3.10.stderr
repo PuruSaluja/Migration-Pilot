@@ -1,0 +1,43 @@
+E.ExF.s
+======================================================================
+ERROR: tests.test_import_error (unittest.loader._FailedTest)
+----------------------------------------------------------------------
+ImportError: Failed to import test module: tests.test_import_error
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.10/unittest/loader.py", line 436, in _find_test_path
+    module = self._get_module_from_name(name)
+  File "/usr/local/lib/python3.10/unittest/loader.py", line 377, in _get_module_from_name
+    __import__(name)
+  File "/workspace/tests/test_import_error.py", line 1, in <module>
+    import does_not_exist_either
+ModuleNotFoundError: No module named 'does_not_exist_either'
+
+
+======================================================================
+ERROR: test_error (tests.test_things.Things)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/workspace/tests/test_things.py", line 12, in test_error
+    raise ValueError("boom")
+ValueError: boom
+
+======================================================================
+FAIL: test_fail (tests.test_things.Things)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/workspace/tests/test_things.py", line 9, in test_fail
+    self.assertEqual(1, 2)
+AssertionError: 1 != 2
+
+======================================================================
+FAIL: test_subtests (tests.test_things.Things) (i=1)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/workspace/tests/test_things.py", line 25, in test_subtests
+    self.assertNotEqual(i, 1)
+AssertionError: 1 == 1
+
+----------------------------------------------------------------------
+Ran 8 tests in 0.001s
+
+FAILED (failures=2, errors=2, skipped=1, expected failures=1)
