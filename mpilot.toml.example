@@ -51,6 +51,15 @@ egress_allowlist = [
   "release-assets.githubusercontent.com",
 ]
 
+[detect]                    # FR-3, §9.4: replaces what detection finds (all unset = detect)
+# Precedence: `mpilot detect/run --test-cmd` > these > CI config > heuristics. Each command is
+# one line, run with `sh -c` inside the sandbox from the repository root.
+# install_cmd = "npm ci"
+# build_cmd = "npm run build"
+# typecheck_cmd = "npm run typecheck"
+# test_cmd = "npm test"
+# runtime_version = "20"    # an image version: node 18/20/22, python 3.9-3.13
+
 [intake]                    # FR-2
 clone_depth = 50
 max_repo_mb = 500

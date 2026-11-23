@@ -12,13 +12,20 @@ from pathlib import Path
 from typing import Annotated
 
 import typer
+from docker.errors import DockerException
+from pydantic import ValidationError
 
 from mpilot import __version__
 from mpilot.config import Config, load_config
-from mpilot.core.errors import ConfigError
+from mpilot.core.errors import ConfigError, InputError
 from mpilot.core.github_token import load_github_token
 from mpilot.core.log import configure_logging
 from mpilot.core.types import ExitCode
+from mpilot.detect.env import ImageRef, detect_env
+from mpilot.detect.local import open_local_tree
+from mpilot.knowledge.base import DetectOverrides
+from mpilot.models.domain import Ecosystem
+from mpilot.sandbox.images import ImageError, resolve_image_ref
 
 logger = logging.getLogger("mpilot.cli")
 
@@ -171,13 +178,59 @@ def approve(
     _not_implemented("approve")
 
 
+def _image_ref() -> ImageRef:
+    """The production image resolver (Docker). Built only once detection has succeeded, so a
+    bad repository path never needs Docker. Tests replace this function."""
+    import docker
+
+    client = docker.from_env()
+    return lambda tag: resolve_image_ref(client, tag)
+
+
 @app.command()
 def detect(
+    ctx: typer.Context,
     repo: Annotated[Path, typer.Option("--repo", help="Path to the repository.")],
+    test_cmd: Annotated[
+        str | None, typer.Option("--test-cmd", help="Override the detected test command.")
+    ] = None,
+    ecosystem: Annotated[
+        Ecosystem | None,
+        typer.Option("--ecosystem", help="node or python, when the repository has both."),
+    ] = None,
 ) -> None:
     """Detect the repository's environment and print the EnvProfile as JSON."""
-    del repo
-    _not_implemented("detect")
+    config: Config = ctx.obj
+    try:
+        user = DetectOverrides(test_cmd=test_cmd)
+    except ValidationError as exc:
+        logger.error("invalid option", extra={"error": str(exc)})
+        raise typer.Exit(code=ExitCode.INPUT_ERROR) from exc
+    resolver: list[ImageRef] = []
+
+    def image_ref(tag: str) -> str:
+        if not resolver:
+            resolver.append(_image_ref())
+        return resolver[0](tag)
+
+    try:
+        tree = open_local_tree(repo)
+        detection = detect_env(
+            tree,
+            image_ref=image_ref,
+            ecosystem=ecosystem,
+            user=user,
+            config=config.detect.to_overrides(),
+        )
+    except InputError as exc:
+        logger.error("detection failed", extra={"error": str(exc)})
+        raise typer.Exit(code=ExitCode.INPUT_ERROR) from exc
+    except (ImageError, DockerException) as exc:
+        logger.error("cannot resolve the sandbox image", extra={"error": str(exc)})
+        raise typer.Exit(code=ExitCode.FAILED) from exc
+    for warning in detection.warnings:
+        logger.warning("detection warning", extra={"warning": warning})
+    typer.echo(detection.profile.model_dump_json(indent=2))
 
 
 @app.command()

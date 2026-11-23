@@ -52,6 +52,7 @@ def test_version() -> None:
     assert result.output.startswith("mpilot ")
 
 
+IMPLEMENTED = {"detect"}  # P2-12b: tested in test_cli_detect.py
 STUB_INVOCATIONS = [
     (["run", "--repo", "x", "--goal", "y"], "run"),
     (["status", "r1"], "status"),
@@ -59,7 +60,6 @@ STUB_INVOCATIONS = [
     (["resume", "r1"], "resume"),
     (["cancel", "r1"], "cancel"),
     (["approve", "r1", "--reject", "--reason", "no"], "approve"),
-    (["detect", "--repo", "."], "detect"),
     (["selftest"], "selftest"),
     (["bench", "run", "suite.yaml", "--systems", "b0,b1"], "bench run"),
     (["bench", "resume", "b1"], "bench resume"),
@@ -79,7 +79,7 @@ def test_stub_exits_1_with_json_log(args: list[str], command: str) -> None:
 
 def test_every_stub_invocation_covers_a_listed_command() -> None:
     covered = {args[0] for args, _ in STUB_INVOCATIONS}
-    assert covered == set(TOP_LEVEL)
+    assert covered | IMPLEMENTED == set(TOP_LEVEL)
 
 
 def test_invalid_config_exits_2_before_any_command(tmp_path: Path) -> None:

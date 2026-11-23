@@ -14,6 +14,7 @@ from typing import Protocol, runtime_checkable
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 
+from mpilot.core.commands import Command, RuntimeVersion
 from mpilot.models.domain import Ecosystem, EnvProfile, NonNegInt, PositiveInt
 from mpilot.policy.gate import TreeReader
 from mpilot.sandbox.base import Workspace
@@ -24,13 +25,14 @@ class _Frozen(BaseModel):
 
 
 class DetectOverrides(_Frozen):
-    """User override and `mpilot.toml` values: they always win (FR-3, §9.4 precedence)."""
+    """User override and `mpilot.toml` values: they always win (FR-3, §9.4 precedence). The
+    precedence between those two layers is the detector's (`detect_env`)."""
 
-    install_cmd: str | None = None
-    build_cmd: str | None = None
-    typecheck_cmd: str | None = None
-    test_cmd: str | None = None
-    runtime_version: str | None = None
+    install_cmd: Command | None = None
+    build_cmd: Command | None = None
+    typecheck_cmd: Command | None = None
+    test_cmd: Command | None = None
+    runtime_version: RuntimeVersion | None = None
 
 
 @runtime_checkable

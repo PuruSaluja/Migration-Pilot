@@ -31,10 +31,11 @@ import types
 from collections.abc import Mapping
 from datetime import date
 from pathlib import Path
-from typing import Annotated, Any, Literal, Union, get_args, get_origin
+from typing import TYPE_CHECKING, Annotated, Any, Literal, Union, get_args, get_origin
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
+from mpilot.core.commands import Command, RuntimeVersion
 from mpilot.core.errors import ConfigError
 from mpilot.core.types import EffortPolicy, Role, RoutingPolicy
 from mpilot.model_policy import (
@@ -46,6 +47,9 @@ from mpilot.model_policy import (
 )
 from mpilot.models.domain import Budgets
 from mpilot.sandbox.proxy.server import check_allowlist
+
+if TYPE_CHECKING:
+    from mpilot.knowledge.base import DetectOverrides
 
 ENV_PREFIX = "MPILOT_"
 ENV_CONFIG_PATH = "MPILOT_CONFIG"
@@ -134,6 +138,22 @@ class SandboxSettings(_Section):
                 "(changing the list is a SPEC §9.3 decision)"
             )
         return value
+
+
+class DetectSettings(_Section):
+    """FR-3, §9.4: commands and runtime that replace what detection finds. Second in the
+    precedence (user override > mpilot.toml > CI > heuristics). Unset means "detect"."""
+
+    install_cmd: Command | None = None
+    build_cmd: Command | None = None
+    typecheck_cmd: Command | None = None
+    test_cmd: Command | None = None
+    runtime_version: RuntimeVersion | None = None
+
+    def to_overrides(self) -> DetectOverrides:
+        from mpilot.knowledge.base import DetectOverrides  # not at import: it would be a cycle
+
+        return DetectOverrides(**self.model_dump())
 
 
 class IntakeSettings(_Section):
@@ -285,6 +305,7 @@ class Config(_Section):
     diff: DiffSettings = Field(default_factory=DiffSettings)
     bench: BenchSettings = Field(default_factory=BenchSettings)
     sandbox: SandboxSettings = Field(default_factory=SandboxSettings)
+    detect: DetectSettings = Field(default_factory=DetectSettings)
     intake: IntakeSettings = Field(default_factory=IntakeSettings)
     baseline: BaselineSettings = Field(default_factory=BaselineSettings)
     integrity: IntegritySettings = Field(default_factory=IntegritySettings)

@@ -106,7 +106,7 @@ def test_every_numeric_default_is_covered_by_the_spec_table() -> None:
     covered = set(SPEC_DEFAULTS)
     for section_name in Config.model_fields:
         section = getattr(config, section_name)
-        if not isinstance(section, _Section) or section_name in {"github", "paths"}:
+        if not isinstance(section, _Section) or section_name in {"github", "paths", "detect"}:
             continue
         for field in type(section).model_fields:
             if f"{section_name}.{field}" in NON_NUMERIC_FIELDS:
@@ -411,6 +411,8 @@ def _perturbed(value: Any, annotation: Any) -> Any:
         return value + "x"
     if isinstance(value, list):
         return [*value, "a/b"]
+    if value is None:  # an optional text setting (the `[detect]` overrides)
+        return "x"
     raise AssertionError(f"no perturbation for {annotation}")
 
 
