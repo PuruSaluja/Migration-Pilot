@@ -105,6 +105,15 @@ ALLOWED_EXEC_ENV: Final = frozenset(
         "PYTHONHASHSEED",
         "PYTHONDONTWRITEBYTECODE",
         "PYTHONUNBUFFERED",
+        # jest-junit's output file and ID templates (P2-14a, `detect/node.py`): jest-junit
+        # takes no CLI options. They name a file in the workspace and text templates only.
+        "JEST_JUNIT_OUTPUT_DIR",
+        "JEST_JUNIT_OUTPUT_NAME",
+        "JEST_JUNIT_CLASSNAME",
+        "JEST_JUNIT_TITLE",
+        "JEST_JUNIT_ANCESTOR_SEPARATOR",
+        "JEST_JUNIT_ADD_FILE_ATTRIBUTE",
+        "JEST_JUNIT_REPORT_TEST_SUITE_ERRORS",
     }
 )
 

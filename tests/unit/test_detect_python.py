@@ -627,6 +627,7 @@ def test_pytest_gets_a_junitxml_flag_and_unittest_gets_none() -> None:
     assert inv is not None
     assert inv.cmd == f"{PY} -m pytest -q --junitxml=reports/junit.xml"
     assert inv.output_path == "reports/junit.xml"
+    assert inv.env == {}
     u = detect({"requirements.txt": "six\n", "tests/test_a.py": UNITTEST})
     assert u.test_runner is not None
     assert u.test_runner.value == "unittest"

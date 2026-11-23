@@ -338,30 +338,50 @@ def _junit_runner_for_args(
     return None
 
 
+#: jest-junit settings that make its XML match `verify/test_ids.py`: the file as classname and
+#: `file` attribute, titles joined with jest's own ` › `, and a case for every test file that
+#: fails to load (jest-junit's default leaves those out, so a broken file would vanish).
+#: Recorded with jest-junit 16 in P2-14a: these variables win over package.json `jest-junit`.
+JEST_JUNIT_ENV: Final[Mapping[str, str]] = {
+    "JEST_JUNIT_CLASSNAME": "{filepath}",
+    "JEST_JUNIT_TITLE": "{classname} › {title}",
+    "JEST_JUNIT_ANCESTOR_SEPARATOR": " › ",
+    "JEST_JUNIT_ADD_FILE_ATTRIBUTE": "true",
+    "JEST_JUNIT_REPORT_TEST_SUITE_ERRORS": "true",
+}
+
+
 def junit_invocation(detection: NodeDetection, output_path: str) -> JunitInvocation | None:
     """The test command with JUnit reporter flags, or None if there is no safe way.
 
-    `output_path` must be a plain relative path. jest-junit has no flag for its output file
-    (only environment variables, which the sandbox does not pass), so for jest the XML is
-    written to jest-junit's default, `junit.xml`, and that is what `output_path` reports.
+    `output_path` must be a plain relative path. jest-junit takes no CLI options, so for jest
+    the output file and the ID templates go in through the exec environment (`env`), which
+    jest-junit reads before a repo's own `jest-junit` config (see `JEST_JUNIT_ENV`).
     """
     check_output_path(output_path)
     runner = detection.junit_runner_for_args
     if runner is None or detection.test_cmd is None:
         return None
+    env: dict[str, str] = {}
     if runner == "jest":
-        flags, written = "--reporters=default --reporters=jest-junit", "junit.xml"
+        flags = "--reporters=default --reporters=jest-junit"
+        directory, _, name = output_path.rpartition("/")
+        env = {
+            "JEST_JUNIT_OUTPUT_DIR": directory or ".",
+            "JEST_JUNIT_OUTPUT_NAME": name,
+            **JEST_JUNIT_ENV,
+        }
     elif runner == "vitest":
         flags = f"--reporter=default --reporter=junit --outputFile.junit={output_path}"
-        written = output_path
     elif runner == "mocha":
         flags = f"--reporter mocha-junit-reporter --reporter-options mochaFile={output_path}"
-        written = output_path
     else:
         return None
     manager = detection.package_manager.value
     separator = " -- " if manager == "npm" else " "  # npm needs `--` to pass flags on
-    return JunitInvocation(cmd=f"{detection.test_cmd.value}{separator}{flags}", output_path=written)
+    return JunitInvocation(
+        cmd=f"{detection.test_cmd.value}{separator}{flags}", output_path=output_path, env=env
+    )
 
 
 # --- runtime version -----------------------------------------------------------------------------

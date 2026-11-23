@@ -469,10 +469,46 @@ def jd(script: str, deps: dict[str, str], lockfile: str = "package-lock.json") -
 
 
 def test_the_junit_command_for_jest() -> None:
-    inv = junit_invocation(jd("jest", {"jest": "29", "jest-junit": "16"}), "ignored/anywhere.xml")
+    """jest-junit takes no CLI options: its output file and ID templates go in through the
+    exec environment (which beats a repo's own `jest-junit` config, P2-14a recording), so
+    the XML lands at `output_path` and carries file-qualified names and suite errors."""
+    inv = junit_invocation(jd("jest", {"jest": "29", "jest-junit": "16"}), "reports/junit.xml")
     assert inv is not None
     assert inv.cmd == "npm test -- --reporters=default --reporters=jest-junit"
-    assert inv.output_path == "junit.xml", "jest-junit's default; moving it needs an env var"
+    assert inv.output_path == "reports/junit.xml"
+    assert inv.env == {
+        "JEST_JUNIT_OUTPUT_DIR": "reports",
+        "JEST_JUNIT_OUTPUT_NAME": "junit.xml",
+        "JEST_JUNIT_CLASSNAME": "{filepath}",
+        "JEST_JUNIT_TITLE": "{classname} › {title}",
+        "JEST_JUNIT_ANCESTOR_SEPARATOR": " › ",
+        "JEST_JUNIT_ADD_FILE_ATTRIBUTE": "true",
+        "JEST_JUNIT_REPORT_TEST_SUITE_ERRORS": "true",
+    }
+    top = junit_invocation(jd("jest", {"jest": "29", "jest-junit": "16"}), "junit.xml")
+    assert top is not None
+    assert (top.env["JEST_JUNIT_OUTPUT_DIR"], top.env["JEST_JUNIT_OUTPUT_NAME"]) == (
+        ".",
+        "junit.xml",
+    )
+
+
+def test_the_jest_junit_environment_may_enter_the_sandbox() -> None:
+    """Every variable is on the driver's exec allowlist and passes the credential floor."""
+    from mpilot.sandbox.driver import env_problems
+
+    inv = junit_invocation(jd("jest", {"jest": "29", "jest-junit": "16"}), "out/junit.xml")
+    assert inv is not None
+    assert env_problems(inv.env) == []
+
+
+def test_only_jest_needs_an_environment() -> None:
+    vitest = junit_invocation(jd("vitest run", {"vitest": "1"}), "junit.xml")
+    mocha = junit_invocation(jd("mocha", {"mocha-junit-reporter": "2"}), "junit.xml")
+    assert vitest is not None
+    assert mocha is not None
+    assert vitest.env == {}
+    assert mocha.env == {}
 
 
 def test_the_junit_command_for_vitest_per_package_manager() -> None:
