@@ -22,8 +22,8 @@ Decisions (none changes a SPEC [REC] item; see PROGRESS.md):
   no hint the default is the newest image.
 - mypy runs only if it is configured (a config section or file): a tool that is merely
   installed may not be enforced by the project, and running it would make the baseline red.
-  pyright is recognised but not run: its PyPI wrapper downloads Node on first use, which the
-  offline work container cannot do.
+  pyright runs too, from the images' own copy (installed with the wrapper's `nodejs` extra, so
+  nothing is downloaded at run time) against the repo's venv. mypy wins if both are configured.
 - tox and nox are not run (the images do not carry them); a project that only has those gets
   no test command and a warning.
 """
@@ -482,11 +482,8 @@ def _typecheck(
     elif _has_table(pyproject, "tool", "pyright"):
         pyright = "pyproject.toml#tool.pyright"
     if pyright is not None and mypy is None:
-        warnings.append(
-            "pyright is configured but cannot run offline (its PyPI wrapper downloads Node on "
-            "first use): no typecheck command"
-        )
-        return Detected("pyright", pyright), None
+        command = f"pyright --pythonpath {VENV_PYTHON}"
+        return Detected("pyright", pyright), Detected(command, pyright)
     if mypy is None:
         return None, None
     if _installed_source(plan, "mypy") is None:

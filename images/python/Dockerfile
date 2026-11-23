@@ -37,6 +37,9 @@ ARG UV_SHA256_AMD64=a7fbaff2b9a271d85c1bdb540941090fd1ce011797b4abeb48e4dcd39c24
 ARG UV_SHA256_ARM64=0797542018e541a9288855df555c8077eed06f7a47d206362030480e8ecc9f3d
 ARG POETRY_VERSION=2.2.1
 ARG PDM_VERSION=2.26.9
+# pyright (P2-11b): the PyPI wrapper's `nodejs` extra brings Node from a wheel instead of
+# downloading it on first use, so the type check runs with no network at all.
+ARG PYRIGHT_VERSION=1.1.414
 ENV PDM_CHECK_UPDATE=false
 
 # The sandbox user's uid must equal the host user's uid (§9.3); the driver also passes
@@ -68,9 +71,9 @@ RUN set -eux; \
     rm -rf /tmp/uv.tar.gz "/tmp/uv-${uv_arch}-unknown-linux-gnu"; \
     apt-get purge -y --auto-remove curl; \
     rm -rf /var/lib/apt/lists/*; \
-    for tool in poetry pdm; do \
+    for tool in poetry pdm pyright; do \
         python -m venv "/opt/tools/${tool}"; \
-        spec="$(case ${tool} in poetry) echo "poetry==${POETRY_VERSION}";; pdm) echo "pdm[locked]==${PDM_VERSION}";; esac)"; \
+        spec="$(case ${tool} in poetry) echo "poetry==${POETRY_VERSION}";; pdm) echo "pdm[locked]==${PDM_VERSION}";; pyright) echo "pyright[nodejs]==${PYRIGHT_VERSION}";; esac)"; \
         "/opt/tools/${tool}/bin/pip" install --no-cache-dir --disable-pip-version-check "${spec}"; \
         ln -s "/opt/tools/${tool}/bin/${tool}" "/usr/local/bin/${tool}"; \
     done; \

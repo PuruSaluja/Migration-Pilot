@@ -107,6 +107,7 @@ ECOSYSTEMS: Final[tuple[Ecosystem, ...]] = (
             ("uv", "uv --version"),
             ("poetry", "poetry --version"),
             ("pdm", "pdm --version"),
+            ("pyright", "pyright --version"),
             *_COMMON_TOOLS,
         ),
     ),

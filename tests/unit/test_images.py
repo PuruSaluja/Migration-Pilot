@@ -122,7 +122,7 @@ def test_package_managers_are_pinned_not_floating() -> None:
     assert re.search(r"^ARG PNPM_VERSION=\d+\.\d+\.\d+$", node, re.M)
     assert '"pnpm@${PNPM_VERSION}"' in node
     py = (IMAGES_DIR / "python" / "Dockerfile").read_text()
-    for name in ("UV_VERSION", "POETRY_VERSION", "PDM_VERSION"):
+    for name in ("UV_VERSION", "POETRY_VERSION", "PDM_VERSION", "PYRIGHT_VERSION"):
         assert re.search(rf"^ARG {name}=\d+\.\d+\.\d+$", py, re.M), name
     assert SHA.match(re.search(r"^ARG UV_SHA256_AMD64=(\S+)", py, re.M).group(1))  # type: ignore[union-attr]
 
@@ -200,6 +200,7 @@ def test_the_lock_records_what_the_images_were_built_from(lock: DigestsLock) -> 
         else:
             assert "2.2.1" in entry.tools["poetry"]
             assert "2.26.9" in entry.tools["pdm"]
+            assert "1.1.414" in entry.tools["pyright"]
             assert "0.13.9" in entry.tools["uv"]
 
 

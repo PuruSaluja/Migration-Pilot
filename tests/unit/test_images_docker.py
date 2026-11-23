@@ -175,6 +175,30 @@ def test_pdm_runs_with_the_dependency_versions_it_was_tested_with(
     assert err == ""
 
 
+@pytest.mark.parametrize("spec", PYTHON_SPECS, ids=_ids(PYTHON_SPECS))
+def test_pyright_runs_offline_as_the_sandbox_user_against_the_repos_venv(
+    spec: ImageSpec, built: dict[str, ImageSpec], client: docker.DockerClient
+) -> None:
+    """P2-11b: pyright's PyPI wrapper used to download Node on first use, which the offline
+    work container cannot do. The images now carry Node inside the wrapper's venv: a type error
+    is found (exit 1), clean code passes (exit 0), nothing is downloaded and nothing is written
+    outside /tmp, with no network, a read-only root and no capabilities."""
+    script = (
+        "set -e; mkdir /tmp/p; cd /tmp/p; python -m venv --without-pip .venv; "
+        "printf 'x: int = 1\\n' > ok.py; "
+        "pyright --pythonpath .venv/bin/python ok.py; "
+        "printf 'y: int = \"a\"\\n' > bad.py; "
+        'set +e; pyright --pythonpath .venv/bin/python bad.py; echo "bad-exit=$?"'
+    )
+    code, out, err = in_image(client, spec.tag, ["bash", "-c", script], user="1000:1000")
+    assert code == 0, (out, err)
+    assert "0 errors" in out
+    assert 'Type "Literal[\'a\']" is not assignable to declared type "int"' in out
+    assert "bad-exit=1" in out
+    assert "download" not in (out + err).lower()
+    assert "update available" not in (out + err).lower()
+
+
 def test_poetry_and_pdm_do_not_share_the_repos_python_packages(
     built: dict[str, ImageSpec],
     client: docker.DockerClient,
@@ -183,7 +207,17 @@ def test_poetry_and_pdm_do_not_share_the_repos_python_packages(
     code, out, err = in_image(client, "mpilot/python:3.12", ["pip", "list", "--format=freeze"])
     assert code == 0, err
     names = {line.split("==")[0].lower() for line in out.splitlines()}
-    assert not names & {"poetry", "pdm", "poetry-core", "virtualenv", "cleo", "installer"}
+    assert not names & {
+        "poetry",
+        "pdm",
+        "poetry-core",
+        "virtualenv",
+        "cleo",
+        "installer",
+        "pyright",
+        "nodejs-wheel-binaries",
+        "nodeenv",
+    }
 
 
 def test_pnpm_does_not_try_to_download_another_version_offline(

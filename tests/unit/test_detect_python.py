@@ -597,14 +597,23 @@ def test_mypy_configured_but_not_installed_still_runs_with_a_warning() -> None:
         ),
     ],
 )
-def test_pyright_is_recognized_but_not_run_because_it_cannot_run_offline(
+def test_pyright_runs_from_the_images_own_copy_against_the_repos_venv(
     files: dict[str, str], source: str
 ) -> None:
     d = detect({"requirements.txt": "pyright\n", **files})
     assert d.typecheck_tool is not None
     assert (d.typecheck_tool.value, d.typecheck_tool.source) == ("pyright", source)
-    assert d.typecheck_cmd is None
-    assert any("pyright" in w and "offline" in w for w in d.warnings)
+    assert d.typecheck_cmd is not None
+    assert d.typecheck_cmd.value == "pyright --pythonpath .venv/bin/python"
+    assert d.typecheck_cmd.source == source
+    assert not any("offline" in w for w in d.warnings)
+
+
+def test_pyright_runs_even_when_the_repo_does_not_list_it_as_a_dependency() -> None:
+    # unlike mypy, the images carry pyright, so it need not be installed into the repo's venv
+    d = detect({"requirements.txt": "six\n", "pyrightconfig.json": "{}"})
+    assert d.typecheck_cmd is not None
+    assert not any("pyright" in w for w in d.warnings)
 
 
 def test_mypy_wins_when_both_are_configured() -> None:
