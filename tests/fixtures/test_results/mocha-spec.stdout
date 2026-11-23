@@ -14,7 +14,7 @@
       3) "before all" hook for "after failing hook"
 
 
-  4 passing (6ms)
+  4 passing (7ms)
   2 pending
   3 failing
 

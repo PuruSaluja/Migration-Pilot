@@ -1,8 +1,8 @@
 
 [1m[46m RUN [49m[22m [36mv3.2.7 [39m[90m/workspace[39m
 
- [31m❯[39m tests/math.test.js [2m([22m[2m7 tests[22m[2m | [22m[31m2 failed[39m[2m | [22m[33m2 skipped[39m[2m)[22m[32m 12[2mms[22m[39m
-   [32m✓[39m math[2m > [22madds[32m 2[2mms[22m[39m
+ [31m❯[39m tests/math.test.js [2m([22m[2m7 tests[22m[2m | [22m[31m2 failed[39m[2m | [22m[33m2 skipped[39m[2m)[22m[32m 10[2mms[22m[39m
+   [32m✓[39m math[2m > [22madds[32m 1[2mms[22m[39m
 [31m   [31m×[31m math[2m > [22mnested[2m > [22msubtracts & <compares> "quotes"[39m[32m 7[2mms[22m[39m
 [31m     → expected 1 to be 3 // Object.is equality[39m
    [2m[90m↓[39m[22m math[2m > [22mskipped one
@@ -11,14 +11,14 @@
 [31m   [31m×[31m math[2m > [22minc 2 -> 4[39m[32m 1[2mms[22m[39m
 [31m     → expected 3 to be 4 // Object.is equality[39m
    [32m✓[39m top level[32m 0[2mms[22m[39m
- [31m❯[39m tests/sub/unicode.test.js [2m([22m[2m2 tests[22m[2m | [22m[31m1 failed[39m[2m)[22m[32m 6[2mms[22m[39m
-   [32m✓[39m ünïcödé ✓[32m 1[2mms[22m[39m
-[31m   [31m×[31m throws error[39m[32m 4[2mms[22m[39m
-[31m     → boom[39m
  [32m✓[39m tests/green.test.js [2m([22m[2m2 tests[22m[2m)[22m[32m 2[2mms[22m[39m
+ [31m❯[39m tests/sub/unicode.test.js [2m([22m[2m2 tests[22m[2m | [22m[31m1 failed[39m[2m)[22m[32m 5[2mms[22m[39m
+   [32m✓[39m ünïcödé ✓[32m 1[2mms[22m[39m
+[31m   [31m×[31m throws error[39m[32m 3[2mms[22m[39m
+[31m     → boom[39m
 
 [2m Test Files [22m [1m[31m3 failed[39m[22m[2m | [22m[1m[32m1 passed[39m[22m[90m (4)[39m
 [2m      Tests [22m [1m[31m3 failed[39m[22m[2m | [22m[1m[32m6 passed[39m[22m[2m | [22m[33m1 skipped[39m[2m | [22m[90m1 todo[39m[90m (11)[39m
-[2m   Start at [22m 03:47:43
-[2m   Duration [22m 325ms[2m (transform 67ms, setup 0ms, collect 59ms, tests 20ms, environment 1ms, prepare 341ms)[22m
+[2m   Start at [22m 04:33:28
+[2m   Duration [22m 334ms[2m (transform 45ms, setup 0ms, collect 51ms, tests 18ms, environment 1ms, prepare 371ms)[22m
 

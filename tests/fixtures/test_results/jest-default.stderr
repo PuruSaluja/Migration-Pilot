@@ -1,4 +1,17 @@
 PASS tests/green.test.js
+FAIL tests/broken.test.js
+  ● Test suite failed to run
+
+    Cannot find module './does-not-exist' from 'tests/broken.test.js'
+
+    [0m[31m[1m>[22m[39m[90m 1 |[39m [36mconst[39m x [33m=[39m require([32m'./does-not-exist'[39m)[33m;[39m
+     [90m   |[39m                                      [31m[1m^[22m[39m
+     [90m 2 |[39m test([32m'never runs'[39m[33m,[39m () [33m=>[39m {})[33m;[39m
+     [90m 3 |[39m[0m
+
+      at Resolver._throwModNotFoundError (node_modules/jest-resolve/build/resolver.js:427:11)
+      at Object.<anonymous> (tests/broken.test.js:1:38)
+
 FAIL tests/sub/unicode.test.js
   ● throws error
 
@@ -47,21 +60,8 @@ FAIL tests/math.test.js
 
       at toBe (tests/math.test.js:9:73)
 
-FAIL tests/broken.test.js
-  ● Test suite failed to run
-
-    Cannot find module './does-not-exist' from 'tests/broken.test.js'
-
-    [0m[31m[1m>[22m[39m[90m 1 |[39m [36mconst[39m x [33m=[39m require([32m'./does-not-exist'[39m)[33m;[39m
-     [90m   |[39m                                      [31m[1m^[22m[39m
-     [90m 2 |[39m test([32m'never runs'[39m[33m,[39m () [33m=>[39m {})[33m;[39m
-     [90m 3 |[39m[0m
-
-      at Resolver._throwModNotFoundError (node_modules/jest-resolve/build/resolver.js:427:11)
-      at Object.<anonymous> (tests/broken.test.js:1:38)
-
 Test Suites: 3 failed, 1 passed, 4 total
 Tests:       3 failed, 1 skipped, 1 todo, 6 passed, 11 total
 Snapshots:   0 total
-Time:        0.644 s
+Time:        0.602 s
 Ran all test suites.

@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8" ?>
-<testsuites name="vitest tests" tests="12" failures="4" errors="0" time="0.019804501">
-    <testsuite name="tests/broken.test.js" timestamp="2026-11-23T03:47:42.349Z" hostname="e9a821de6f0c" tests="1" failures="1" errors="0" skipped="0" time="0">
+<testsuites name="vitest tests" tests="12" failures="4" errors="0" time="0.018120895">
+    <testsuite name="tests/broken.test.js" timestamp="2026-11-23T04:33:27.644Z" hostname="980ca8010d41" tests="1" failures="1" errors="0" skipped="0" time="0">
         <testcase classname="tests/broken.test.js" name="tests/broken.test.js" time="0">
             <failure message="Cannot find module &apos;./does-not-exist.js&apos; imported from &apos;/workspace/tests/broken.test.js&apos;" type="Error">
 Error: Cannot find module &apos;./does-not-exist.js&apos; imported from &apos;/workspace/tests/broken.test.js&apos;
@@ -13,16 +13,16 @@ Caused by: Caused by: Error: Failed to load url ./does-not-exist.js (resolved id
             </failure>
         </testcase>
     </testsuite>
-    <testsuite name="tests/green.test.js" timestamp="2026-11-23T03:47:42.354Z" hostname="e9a821de6f0c" tests="2" failures="0" errors="0" skipped="0" time="0.002180344">
-        <testcase classname="tests/green.test.js" name="green &gt; one" time="0.001079993">
+    <testsuite name="tests/green.test.js" timestamp="2026-11-23T04:33:27.648Z" hostname="980ca8010d41" tests="2" failures="0" errors="0" skipped="0" time="0.003743366">
+        <testcase classname="tests/green.test.js" name="green &gt; one" time="0.001784209">
         </testcase>
-        <testcase classname="tests/green.test.js" name="green &gt; two" time="0.000248395">
+        <testcase classname="tests/green.test.js" name="green &gt; two" time="0.000478873">
         </testcase>
     </testsuite>
-    <testsuite name="tests/math.test.js" timestamp="2026-11-23T03:47:42.355Z" hostname="e9a821de6f0c" tests="7" failures="2" errors="0" skipped="2" time="0.011411555">
-        <testcase classname="tests/math.test.js" name="math &gt; adds" time="0.001755678">
+    <testsuite name="tests/math.test.js" timestamp="2026-11-23T04:33:27.649Z" hostname="980ca8010d41" tests="7" failures="2" errors="0" skipped="2" time="0.009250212">
+        <testcase classname="tests/math.test.js" name="math &gt; adds" time="0.001173832">
         </testcase>
-        <testcase classname="tests/math.test.js" name="math &gt; nested &gt; subtracts &amp; &lt;compares&gt; &quot;quotes&quot;" time="0.006517212">
+        <testcase classname="tests/math.test.js" name="math &gt; nested &gt; subtracts &amp; &lt;compares&gt; &quot;quotes&quot;" time="0.005790451">
             <failure message="expected 1 to be 3 // Object.is equality" type="AssertionError">
 AssertionError: expected 1 to be 3 // Object.is equality
 
@@ -41,9 +41,9 @@ AssertionError: expected 1 to be 3 // Object.is equality
         <testcase classname="tests/math.test.js" name="math &gt; todo one" time="0">
             <skipped/>
         </testcase>
-        <testcase classname="tests/math.test.js" name="math &gt; inc 1 -&gt; 2" time="0.00034837">
+        <testcase classname="tests/math.test.js" name="math &gt; inc 1 -&gt; 2" time="0.000254359">
         </testcase>
-        <testcase classname="tests/math.test.js" name="math &gt; inc 2 -&gt; 4" time="0.000957457">
+        <testcase classname="tests/math.test.js" name="math &gt; inc 2 -&gt; 4" time="0.000666913">
             <failure message="expected 3 to be 4 // Object.is equality" type="AssertionError">
 AssertionError: expected 3 to be 4 // Object.is equality
 
@@ -56,13 +56,13 @@ AssertionError: expected 3 to be 4 // Object.is equality
  ❯ tests/math.test.js:9:73
             </failure>
         </testcase>
-        <testcase classname="tests/math.test.js" name="top level" time="0.000131598">
+        <testcase classname="tests/math.test.js" name="top level" time="0.000111985">
         </testcase>
     </testsuite>
-    <testsuite name="tests/sub/unicode.test.js" timestamp="2026-11-23T03:47:42.358Z" hostname="e9a821de6f0c" tests="2" failures="1" errors="0" skipped="0" time="0.006212602">
-        <testcase classname="tests/sub/unicode.test.js" name="ünïcödé ✓" time="0.001569008">
+    <testsuite name="tests/sub/unicode.test.js" timestamp="2026-11-23T04:33:27.657Z" hostname="980ca8010d41" tests="2" failures="1" errors="0" skipped="0" time="0.005127317">
+        <testcase classname="tests/sub/unicode.test.js" name="ünïcödé ✓" time="0.001287586">
         </testcase>
-        <testcase classname="tests/sub/unicode.test.js" name="throws error" time="0.003222943">
+        <testcase classname="tests/sub/unicode.test.js" name="throws error" time="0.002977794">
             <failure message="boom" type="TypeError">
 TypeError: boom
  ❯ tests/sub/unicode.test.js:3:36

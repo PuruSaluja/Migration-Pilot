@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<testsuites name="jest tests" tests="10" failures="3" errors="1" time="0.62">
-  <testsuite name="green" errors="0" failures="0" skipped="0" timestamp="2026-11-23T03:47:35" time="0.407" tests="2">
-    <testcase classname="tests/green.test.js" name="green › one" time="0.004" file="tests/green.test.js">
+<testsuites name="jest tests" tests="10" failures="3" errors="1" time="0.603">
+  <testsuite name="green" errors="0" failures="0" skipped="0" timestamp="2026-11-23T04:33:19" time="0.412" tests="2">
+    <testcase classname="tests/green.test.js" name="green › one" time="0.005" file="tests/green.test.js">
     </testcase>
     <testcase classname="tests/green.test.js" name="green › two" time="0.001" file="tests/green.test.js">
     </testcase>
@@ -25,10 +25,10 @@
       <failure>&quot;Cannot find module &apos;./does-not-exist&apos; from &apos;tests/broken.test.js&apos;&quot;</failure>
     </testcase>
   </testsuite>
-  <testsuite name="undefined" errors="0" failures="1" skipped="0" timestamp="2026-11-23T03:47:35" time="0.433" tests="2">
-    <testcase classname="tests/sub/unicode.test.js" name=" › ünïcödé ✓" time="0.005" file="tests/sub/unicode.test.js">
+  <testsuite name="undefined" errors="0" failures="1" skipped="0" timestamp="2026-11-23T04:33:19" time="0.42" tests="2">
+    <testcase classname="tests/sub/unicode.test.js" name=" › ünïcödé ✓" time="0.004" file="tests/sub/unicode.test.js">
     </testcase>
-    <testcase classname="tests/sub/unicode.test.js" name=" › throws error" time="0.001" file="tests/sub/unicode.test.js">
+    <testcase classname="tests/sub/unicode.test.js" name=" › throws error" time="0.002" file="tests/sub/unicode.test.js">
       <failure>TypeError: boom
     at Object.&lt;anonymous&gt; (/workspace/tests/sub/unicode.test.js:3:36)
     at Promise.then.completed (/workspace/node_modules/jest-circus/build/utils.js:298:28)
@@ -46,10 +46,10 @@
     at Object.worker (/workspace/node_modules/jest-runner/build/testWorker.js:106:12)</failure>
     </testcase>
   </testsuite>
-  <testsuite name="math" errors="0" failures="2" skipped="1" timestamp="2026-11-23T03:47:35" time="0.458" tests="6">
-    <testcase classname="tests/math.test.js" name="math › adds" time="0.005" file="tests/math.test.js">
+  <testsuite name="math" errors="0" failures="2" skipped="1" timestamp="2026-11-23T04:33:19" time="0.457" tests="6">
+    <testcase classname="tests/math.test.js" name="math › adds" time="0.004" file="tests/math.test.js">
     </testcase>
-    <testcase classname="tests/math.test.js" name="math › nested › subtracts &amp; &lt;compares&gt; &quot;quotes&quot;" time="0.003" file="tests/math.test.js">
+    <testcase classname="tests/math.test.js" name="math › nested › subtracts &amp; &lt;compares&gt; &quot;quotes&quot;" time="0.002" file="tests/math.test.js">
       <failure>Error: expect(received).toBe(expected) // Object.is equality
 
 Expected: 3
@@ -76,9 +76,9 @@ Received: 1
     </testcase>
     <testcase classname="tests/math.test.js" name="math › todo one" time="0" file="tests/math.test.js">
     </testcase>
-    <testcase classname="tests/math.test.js" name="math › inc 1 -&gt; 2" time="0" file="tests/math.test.js">
+    <testcase classname="tests/math.test.js" name="math › inc 1 -&gt; 2" time="0.001" file="tests/math.test.js">
     </testcase>
-    <testcase classname="tests/math.test.js" name="math › inc 2 -&gt; 4" time="0.001" file="tests/math.test.js">
+    <testcase classname="tests/math.test.js" name="math › inc 2 -&gt; 4" time="0" file="tests/math.test.js">
       <failure>Error: expect(received).toBe(expected) // Object.is equality
 
 Expected: 4

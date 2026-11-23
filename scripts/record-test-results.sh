@@ -277,6 +277,31 @@ rec mocha mpilot/node:22 mocha-junit \
 mv "$WORK"/mocha/.mpilot/junit.xml "$OUT"/mocha-junit.xml
 rec mocha mpilot/node:22 mocha-spec 'npx mocha'
 
+# Added only now: both runners pick up every test file under their default paths, and the
+# recordings above must not see these (the P2-14 tests count on the numbers).
+mkdir -p "$WORK"/jest/tests2
+cat > "$WORK"/jest/tests2/console.test.js <<'EOT'
+describe('outer', () => {
+  console.log('hello\n  indented');
+  test('first', () => { console.log('inside first'); });
+  describe('inner', () => {
+    test('second', () => {});
+    test.skip('third', () => {});
+  });
+});
+test('top', () => {});
+test.todo('later');
+EOT
+rec jest mpilot/node:22 jest-console 'npx jest tests2/console.test.js'
+cat > "$WORK"/mocha/test/dot.spec.js <<'EOT'
+describe('suite', () => {
+  it('ok', () => {});
+  it('bad', () => { throw new Error('bad'); });
+  it.skip('skipped', () => {});
+});
+EOT
+rec mocha mpilot/node:22 mocha-dot 'npx mocha test/dot.spec.js --reporter dot'
+
 PY=.venv/bin/python
 rec py mpilot/python:3.12 pytest-junit "$PY -m pytest -q --junitxml=.mpilot/junit.xml"
 mv "$WORK"/py/.mpilot/junit.xml "$OUT"/pytest-junit.xml

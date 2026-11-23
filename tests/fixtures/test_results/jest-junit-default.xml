@@ -1,15 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<testsuites name="jest tests" tests="10" failures="3" errors="0" time="0.645">
-  <testsuite name="green" errors="0" failures="0" skipped="0" timestamp="2026-11-23T03:47:33" time="0.446" tests="2">
-    <testcase classname="green one" name="green one" time="0.005">
+<testsuites name="jest tests" tests="10" failures="3" errors="0" time="0.648">
+  <testsuite name="undefined" errors="0" failures="1" skipped="0" timestamp="2026-11-23T04:33:17" time="0.462" tests="2">
+    <testcase classname=" ünïcödé ✓" name=" ünïcödé ✓" time="0.006">
     </testcase>
-    <testcase classname="green two" name="green two" time="0.001">
-    </testcase>
-  </testsuite>
-  <testsuite name="undefined" errors="0" failures="1" skipped="0" timestamp="2026-11-23T03:47:33" time="0.469" tests="2">
-    <testcase classname=" ünïcödé ✓" name=" ünïcödé ✓" time="0.005">
-    </testcase>
-    <testcase classname=" throws error" name=" throws error" time="0.001">
+    <testcase classname=" throws error" name=" throws error" time="0">
       <failure>TypeError: boom
     at Object.&lt;anonymous&gt; (/workspace/tests/sub/unicode.test.js:3:36)
     at Promise.then.completed (/workspace/node_modules/jest-circus/build/utils.js:298:28)
@@ -27,8 +21,14 @@
     at Object.worker (/workspace/node_modules/jest-runner/build/testWorker.js:106:12)</failure>
     </testcase>
   </testsuite>
-  <testsuite name="math" errors="0" failures="2" skipped="1" timestamp="2026-11-23T03:47:33" time="0.489" tests="6">
-    <testcase classname="math adds" name="math adds" time="0.006">
+  <testsuite name="green" errors="0" failures="0" skipped="0" timestamp="2026-11-23T04:33:17" time="0.443" tests="2">
+    <testcase classname="green one" name="green one" time="0.006">
+    </testcase>
+    <testcase classname="green two" name="green two" time="0.001">
+    </testcase>
+  </testsuite>
+  <testsuite name="math" errors="0" failures="2" skipped="1" timestamp="2026-11-23T04:33:17" time="0.484" tests="6">
+    <testcase classname="math adds" name="math adds" time="0.005">
     </testcase>
     <testcase classname="math nested subtracts &amp; &lt;compares&gt; &quot;quotes&quot;" name="math nested subtracts &amp; &lt;compares&gt; &quot;quotes&quot;" time="0.002">
       <failure>Error: expect(received).toBe(expected) // Object.is equality
@@ -59,7 +59,7 @@ Received: 1
     </testcase>
     <testcase classname="math inc 1 -&gt; 2" name="math inc 1 -&gt; 2" time="0.001">
     </testcase>
-    <testcase classname="math inc 2 -&gt; 4" name="math inc 2 -&gt; 4" time="0">
+    <testcase classname="math inc 2 -&gt; 4" name="math inc 2 -&gt; 4" time="0.001">
       <failure>Error: expect(received).toBe(expected) // Object.is equality
 
 Expected: 4
@@ -81,7 +81,7 @@ Received: 3
     at runTest (/workspace/node_modules/jest-runner/build/runTest.js:444:34)
     at Object.worker (/workspace/node_modules/jest-runner/build/testWorker.js:106:12)</failure>
     </testcase>
-    <testcase classname=" top level" name=" top level" time="0.001">
+    <testcase classname=" top level" name=" top level" time="0">
     </testcase>
   </testsuite>
 </testsuites>

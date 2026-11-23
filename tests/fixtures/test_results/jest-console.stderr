@@ -1,0 +1,14 @@
+PASS tests2/console.test.js
+  ✓ top
+  ✎ todo later
+  outer
+    ✓ first (2 ms)
+    inner
+      ✓ second
+      ○ skipped third
+
+Test Suites: 1 passed, 1 total
+Tests:       1 skipped, 1 todo, 3 passed, 5 total
+Snapshots:   0 total
+Time:        0.26 s
+Ran all test suites matching /tests2\/console.test.js/i.

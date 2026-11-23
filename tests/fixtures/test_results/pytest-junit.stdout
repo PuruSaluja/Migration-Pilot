@@ -54,7 +54,7 @@ E       AssertionError: assert 'x::y' != 'x::y'
 tests/test_sample.py:58: AssertionError
 ________________________ TestKlass.test_method_param[2] ________________________
 
-self = <tests.test_sample.TestKlass object at 0x705dc67b3da0>, n = 2
+self = <tests.test_sample.TestKlass object at 0x755be354b050>, n = 2
 
     @pytest.mark.parametrize("n", [1, 2])
     def test_method_param(self, n):
@@ -76,4 +76,4 @@ FAILED tests/test_sample.py::test_param[x::y] - AssertionError: assert 'x::y' !=
 FAILED tests/test_sample.py::TestKlass::test_method_param[2] - assert 2 == 1
 ERROR tests/test_sample.py::test_setup_error - RuntimeError: fixture boom
 ERROR tests/test_sample.py::test_teardown_error - RuntimeError: teardown boom
-5 failed, 11 passed, 2 skipped, 1 xfailed, 1 xpassed, 2 errors in 0.05s
+5 failed, 11 passed, 2 skipped, 1 xfailed, 1 xpassed, 2 errors in 0.06s

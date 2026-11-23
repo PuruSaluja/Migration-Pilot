@@ -1,0 +1,16 @@
+
+
+  .!,
+
+  1 passing (3ms)
+  1 pending
+  1 failing
+
+  1) suite
+       bad:
+     Error: bad
+      at Context.<anonymous> (test/dot.spec.js:3:27)
+      at process.processImmediate (node:internal/timers:484:21)
+
+
+

@@ -54,7 +54,7 @@ E       AssertionError: assert 'x::y' != 'x::y'
 tests/test_sample.py:58: AssertionError
 ________________________ TestKlass.test_method_param[2] ________________________
 
-self = <tests.test_sample.TestKlass object at 0x7294df4fb500>, n = 2
+self = <tests.test_sample.TestKlass object at 0x7d382913b140>, n = 2
 
     @pytest.mark.parametrize("n", [1, 2])
     def test_method_param(self, n):

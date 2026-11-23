@@ -1,0 +1,11 @@
+  console.log
+    hello
+      indented
+
+      at log (tests2/console.test.js:2:11)
+
+  console.log
+    inside first
+
+      at Object.log (tests2/console.test.js:3:33)
+
