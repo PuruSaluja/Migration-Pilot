@@ -20,6 +20,7 @@ from mpilot.verify.test_ids import (
     mocha_id,
     pytest_id,
     pytest_id_from_nodeid,
+    unittest_id,
     vitest_id,
     workspace_relative,
 )
@@ -159,3 +160,38 @@ def test_the_mocha_id_is_the_full_title() -> None:
 )
 def test_file_paths_are_made_workspace_relative_or_dropped(path: str, expected: str | None) -> None:
     assert workspace_relative(path) == expected
+
+
+# ---------------------------------------------------------------- unittest
+
+
+@pytest.mark.parametrize(
+    ("method", "dotted", "params", "expected"),
+    [
+        ("test_x", "pkg.test_a.Case", None, "pkg.test_a.Case.test_x"),  # Python 3.10
+        ("test_x", "pkg.test_a.Case.test_x", None, "pkg.test_a.Case.test_x"),  # Python 3.12
+        ("test_x", "pkg.test_a.Case.test_x", "i=1", "pkg.test_a.Case.test_x (i=1)"),
+        (
+            "tests.test_bad",
+            "unittest.loader._FailedTest",
+            None,
+            "unittest.loader._FailedTest.tests.test_bad",
+        ),
+        (
+            "tests.test_bad",
+            "unittest.loader._FailedTest.tests.test_bad",
+            None,
+            "unittest.loader._FailedTest.tests.test_bad",
+        ),
+        (
+            "test_x",
+            "pkg.Case.not_test_x",
+            None,
+            "pkg.Case.not_test_x.test_x",
+        ),  # suffix, not substring
+    ],
+)
+def test_the_unittest_id_is_the_same_from_python_310_and_312(
+    method: str, dotted: str, params: str | None, expected: str
+) -> None:
+    assert unittest_id(method, dotted, params) == expected

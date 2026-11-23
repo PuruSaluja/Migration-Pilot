@@ -14,7 +14,9 @@ fallback) give the same string for the same test: the baseline's P0 set and a la
   (and jest-junit joins titles with spaces), which `junit.py` flags.
 - mocha: the full title (`describe test`, space-joined), which mocha-junit-reporter writes
   and the spec reporter shows; no file, because the root suite has none.
-- unittest: P2-14b (it has no JUnit output).
+- unittest: `module.Class.method`, `TestCase.id()`, plus ` (params)` for a failing subtest.
+  unittest has no JUnit output; its IDs come from the log, the same on every Python version
+  (3.10 prints `test_x (mod.Class)`, 3.12 `test_x (mod.Class.test_x)`).
 """
 
 from __future__ import annotations
@@ -71,6 +73,14 @@ def jest_id(file: str | None, titles: Sequence[str]) -> str:
 def mocha_id(titles: Sequence[str]) -> str:
     """The full title: every enclosing describe and the test, space-joined."""
     return " ".join(clean(t) for t in titles)
+
+
+def unittest_id(method: str, dotted: str, params: str | None = None) -> str:
+    """`module.Class.method` from the two parts unittest prints, `method (dotted)`: Python
+    3.12's `dotted` already ends in the method, 3.10's does not. A subtest adds ` (params)`."""
+    method, dotted = clean(method), clean(dotted)
+    base = dotted if dotted == method or dotted.endswith("." + method) else f"{dotted}.{method}"
+    return f"{base} ({clean(params)})" if params else base
 
 
 def workspace_relative(path: str) -> str | None:

@@ -88,13 +88,23 @@ class ParsedCase:
 
 @dataclass(frozen=True)
 class ParsedTests:
+    """What one test run reported. For a log (`ResultSource.LOG`) the cases are only the tests
+    the output named, so the counts come from the runner's own summary (`totals`), and
+    `passed_ids_known` says whether every passed test in those counts was named: a verbose
+    reporter lists them, the default one of most runners does not. A JUnit report always
+    names every case (`totals` is None, `passed_ids_known` True)."""
+
     runner: Runner
     source: ResultSource
     cases: tuple[ParsedCase, ...]
     warnings: tuple[str, ...] = ()
+    totals: Counts | None = None
+    passed_ids_known: bool = True
 
     @property
     def counts(self) -> Counts:
+        if self.totals is not None:
+            return self.totals
         tally = Counter(c.outcome for c in self.cases)
         return Counts(
             passed=tally[CaseOutcome.PASSED],
@@ -132,9 +142,13 @@ def to_test_result(
     junit_path: str | None = None,
 ) -> TestResult:
     """The persisted result of one test run. `duration_s` is the command's wall time (the
-    cases' own times leave out collection and start-up). `failures` holds the first failing
+    cases' own times leave out collection and start-up). `passed_ids` is empty when the
+    source did not name every passed test (`ParsedTests.passed_ids_known`): the caller must
+    not build P0 from it (§11.2). `failures` holds the first failing
     copy of each failed ID, in report order, at most `MAX_FAILURES` of them."""
     passed_ids, failed_ids = id_sets(parsed.cases)
+    if not parsed.passed_ids_known:
+        passed_ids = frozenset()  # a partial listing must not read as the full set
     failures: list[FailedTest] = []
     seen: set[str] = set()
     for case in parsed.cases:
